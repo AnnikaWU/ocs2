@@ -115,6 +115,7 @@ mpc
   coldStart                       false
   
   debugPrint                      false
+  profileCostConstraintTiming     false
 
   mpcDesiredFrequency             100   ; [Hz]
   mrtDesiredFrequency             400   ; [Hz]
