@@ -51,6 +51,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include "ocs2_mobile_manipulator/ManipulatorModelInfo.h"
 #include "ocs2_mobile_manipulator/MobileManipulatorPreComputation.h"
+#include "ocs2_mobile_manipulator/ProfilingCollections.h"
 #include "ocs2_mobile_manipulator/constraint/EndEffectorConstraint.h"
 #include "ocs2_mobile_manipulator/constraint/MobileManipulatorSelfCollisionConstraint.h"
 #include "ocs2_mobile_manipulator/cost/QuadraticInputCost.h"
@@ -152,6 +153,7 @@ MobileManipulatorInterface::MobileManipulatorInterface(const std::string& taskFi
   // DDP-MPC settings
   ddpSettings_ = ddp::loadSettings(taskFile, "ddp");
   mpcSettings_ = mpc::loadSettings(taskFile, "mpc");
+  loadData::loadPtreeValue(pt, profileCostConstraintTiming_, "mpc.profileCostConstraintTiming", true);
 
   // Reference Manager
   referenceManagerPtr_.reset(new ReferenceManager);
@@ -159,22 +161,31 @@ MobileManipulatorInterface::MobileManipulatorInterface(const std::string& taskFi
   /*
    * Optimal control problem
    */
+  auto* costPtr = new ProfiledStateInputCostCollection("cost");
+  problem_.costPtr.reset(costPtr);
+  auto* softConstraintPtr = new ProfiledStateInputCostCollection("softConstraint");
+  problem_.softConstraintPtr.reset(softConstraintPtr);
+  auto* stateSoftConstraintPtr = new ProfiledStateCostCollection("stateSoftConstraint");
+  problem_.stateSoftConstraintPtr.reset(stateSoftConstraintPtr);
+  auto* finalSoftConstraintPtr = new ProfiledStateCostCollection("finalSoftConstraint");
+  problem_.finalSoftConstraintPtr.reset(finalSoftConstraintPtr);
+
   // Cost
-  problem_.costPtr->add("inputCost", getQuadraticInputCost(taskFile));
+  costPtr->add("inputCost", getQuadraticInputCost(taskFile));
 
   // Constraints
   // joint limits constraint
-  problem_.softConstraintPtr->add("jointLimits", getJointLimitSoftConstraint(*pinocchioInterfacePtr_, taskFile));
+  softConstraintPtr->add("jointLimits", getJointLimitSoftConstraint(*pinocchioInterfacePtr_, taskFile));
   // end-effector state constraint
-  problem_.stateSoftConstraintPtr->add("endEffector", getEndEffectorConstraint(*pinocchioInterfacePtr_, taskFile, "endEffector",
-                                                                               usePreComputation, libraryFolder, recompileLibraries));
-  problem_.finalSoftConstraintPtr->add("finalEndEffector", getEndEffectorConstraint(*pinocchioInterfacePtr_, taskFile, "finalEndEffector",
-                                                                                    usePreComputation, libraryFolder, recompileLibraries));
+  stateSoftConstraintPtr->add("endEffector", getEndEffectorConstraint(*pinocchioInterfacePtr_, taskFile, "endEffector",
+                                                                      usePreComputation, libraryFolder, recompileLibraries));
+  finalSoftConstraintPtr->add("finalEndEffector", getEndEffectorConstraint(*pinocchioInterfacePtr_, taskFile, "finalEndEffector",
+                                                                           usePreComputation, libraryFolder, recompileLibraries));
   // self-collision avoidance constraint
   bool activateSelfCollision = true;
   loadData::loadPtreeValue(pt, activateSelfCollision, "selfCollision.activate", true);
   if (activateSelfCollision) {
-    problem_.stateSoftConstraintPtr->add(
+    stateSoftConstraintPtr->add(
         "selfCollision", getSelfCollisionConstraint(*pinocchioInterfacePtr_, taskFile, urdfFile, "selfCollision", usePreComputation,
                                                     libraryFolder, recompileLibraries));
   }

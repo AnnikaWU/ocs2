@@ -67,6 +67,8 @@ class MobileManipulatorInterface final : public RobotInterface {
 
   mpc::Settings& mpcSettings() { return mpcSettings_; }
 
+  bool profileCostConstraintTiming() const { return profileCostConstraintTiming_; }
+
   const OptimalControlProblem& getOptimalControlProblem() const override { return problem_; }
 
   std::shared_ptr<ReferenceManagerInterface> getReferenceManagerPtr() const override { return referenceManagerPtr_; }
@@ -91,6 +93,7 @@ class MobileManipulatorInterface final : public RobotInterface {
 
   ddp::Settings ddpSettings_;
   mpc::Settings mpcSettings_;
+  bool profileCostConstraintTiming_ = false;
 
   OptimalControlProblem problem_;
   std::shared_ptr<ReferenceManager> referenceManagerPtr_;

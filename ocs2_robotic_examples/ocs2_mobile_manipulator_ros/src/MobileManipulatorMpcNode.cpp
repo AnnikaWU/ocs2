@@ -29,6 +29,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include <ocs2_ddp/GaussNewtonDDP_MPC.h>
 #include <ocs2_mobile_manipulator/MobileManipulatorInterface.h>
+#include <ocs2_mobile_manipulator/Profiling.h>
 #include <ocs2_ros_interfaces/mpc/MPC_ROS_Interface.h>
 #include <ocs2_ros_interfaces/synchronized_module/RosReferenceManager.h>
 
@@ -68,6 +69,8 @@ int main(int argc, char** argv) {
   auto rosReferenceManagerPtr = std::make_shared<ocs2::RosReferenceManager>(
       robotName, interface.getReferenceManagerPtr());
   rosReferenceManagerPtr->subscribe(node);
+
+  profiling::SummaryGuard profilingGuard(interface.profileCostConstraintTiming());
 
   // MPC
   ocs2::GaussNewtonDDP_MPC mpc(

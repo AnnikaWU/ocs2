@@ -28,6 +28,8 @@ add_library(${PROJECT_NAME}
   src/FactoryFunctions.cpp
   src/MobileManipulatorPreComputation.cpp
   src/MobileManipulatorPinocchioMapping.cpp
+  src/Profiling.cpp
+  src/ProfilingCollections.cpp
   src/constraint/EndEffectorConstraint.cpp
   src/dynamics/WheelBasedMobileManipulatorDynamics.cpp
   src/dynamics/DefaultManipulatorDynamics.cpp
