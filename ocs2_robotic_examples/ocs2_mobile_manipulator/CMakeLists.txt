@@ -86,6 +86,9 @@ install(TARGETS ${PROJECT_NAME}
   LIBRARY DESTINATION lib
   RUNTIME DESTINATION bin
 )
+install(TARGETS ocs2_compare_collision_urdfs
+  RUNTIME DESTINATION lib/${PROJECT_NAME}
+)
 install(DIRECTORY include/${PROJECT_NAME}/
   DESTINATION include/${PROJECT_NAME}
 )
@@ -93,6 +96,13 @@ install(DIRECTORY config
   DESTINATION share/${PROJECT_NAME}
 )
 install(DIRECTORY auto_generated
+  DESTINATION share/${PROJECT_NAME}
+)
+install(DIRECTORY scripts
+  DESTINATION share/${PROJECT_NAME}
+  USE_SOURCE_PERMISSIONS
+)
+install(DIRECTORY docs
   DESTINATION share/${PROJECT_NAME}
 )
 
