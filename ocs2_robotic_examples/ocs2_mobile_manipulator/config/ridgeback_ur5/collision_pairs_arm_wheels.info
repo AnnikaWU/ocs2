@@ -1,0 +1,19 @@
+collisionLinkPairs
+{
+  [0] "front_left_wheel_link, ur_arm_forearm_link"
+  [1] "front_left_wheel_link, ur_arm_wrist_1_link"
+  [2] "front_left_wheel_link, ur_arm_wrist_2_link"
+  [3] "front_left_wheel_link, ur_arm_wrist_3_link"
+  [4] "front_right_wheel_link, ur_arm_forearm_link"
+  [5] "front_right_wheel_link, ur_arm_wrist_1_link"
+  [6] "front_right_wheel_link, ur_arm_wrist_2_link"
+  [7] "front_right_wheel_link, ur_arm_wrist_3_link"
+  [8] "rear_left_wheel_link, ur_arm_forearm_link"
+  [9] "rear_left_wheel_link, ur_arm_wrist_1_link"
+  [10] "rear_left_wheel_link, ur_arm_wrist_2_link"
+  [11] "rear_left_wheel_link, ur_arm_wrist_3_link"
+  [12] "rear_right_wheel_link, ur_arm_forearm_link"
+  [13] "rear_right_wheel_link, ur_arm_wrist_1_link"
+  [14] "rear_right_wheel_link, ur_arm_wrist_2_link"
+  [15] "rear_right_wheel_link, ur_arm_wrist_3_link"
+}

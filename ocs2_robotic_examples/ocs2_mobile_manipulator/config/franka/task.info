@@ -80,7 +80,7 @@ mpc
   coldStart                       false
   
   debugPrint                      false
-  profileCostConstraintTiming     false
+  profileCostConstraintTiming     true
 
   mpcDesiredFrequency             100   ; [Hz]
   mrtDesiredFrequency             400   ; [Hz]
@@ -211,10 +211,34 @@ selfCollision
   {
   }
 
+  ; Optional URDF used only to build self-collision geometry.
+  ; Leave empty to use the main URDF passed to MobileManipulatorInterface.
+  collisionUrdfFile ""
+  ; collisionUrdfFile "panda_collision_spheres.urdf"
+
   ; Self Collision pairs
   collisionLinkPairs
   {
-    [0] "panda_link1, panda_hand"
+    [0] "panda_hand, panda_link0"
+    [1] "panda_hand, panda_link1"
+    [2] "panda_hand, panda_link2"
+    [3] "panda_hand, panda_link3"
+    [4] "panda_link0, panda_link5"
+    [5] "panda_link0, panda_link6"
+    [6] "panda_link0, panda_link7"
+    [7] "panda_link0, panda_link8"
+    [8] "panda_link1, panda_link5"
+    [9] "panda_link1, panda_link6"
+    [10] "panda_link1, panda_link7"
+    [11] "panda_link1, panda_link8"
+    [12] "panda_link2, panda_link5"
+    [13] "panda_link2, panda_link6"
+    [14] "panda_link2, panda_link7"
+    [15] "panda_link2, panda_link8"
+    [16] "panda_link3, panda_link5"
+    [17] "panda_link3, panda_link7"
+    [18] "panda_link5, panda_link8"
+    [19] "panda_link6, panda_link8"
   }
 
   ; minimum distance allowed between the pairs
