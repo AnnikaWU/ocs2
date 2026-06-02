@@ -64,6 +64,18 @@ ament_target_dependencies(${PROJECT_NAME}
 )
 target_compile_options(${PROJECT_NAME} PUBLIC ${OCS2_PINOCCHIO_FLAGS})
 
+add_executable(ocs2_compare_collision_urdfs
+  src/CompareCollisionUrdfs.cpp
+)
+target_link_libraries(ocs2_compare_collision_urdfs
+  PRIVATE
+    ${PROJECT_NAME}
+)
+target_include_directories(ocs2_compare_collision_urdfs
+  PRIVATE
+    ${PROJECT_BINARY_DIR}/include
+)
+
 #############
 ## Install ##
 #############
