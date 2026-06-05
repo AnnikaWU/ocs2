@@ -11,6 +11,7 @@ find_package(ocs2_mpc REQUIRED)
 find_package(ocs2_robotic_tools REQUIRED)
 find_package(ocs2_robotic_assets REQUIRED)
 find_package(ocs2_pinocchio_interface REQUIRED)
+find_package(ocs2_collision_nextgen REQUIRED)
 find_package(ocs2_self_collision REQUIRED)
 find_package(pinocchio REQUIRED)
 find_package(hpp-fcl REQUIRED)
@@ -60,6 +61,7 @@ ament_target_dependencies(${PROJECT_NAME}
     ocs2_robotic_tools
     ocs2_robotic_assets
     ocs2_pinocchio_interface
+    ocs2_collision_nextgen
     ocs2_self_collision
 )
 target_compile_options(${PROJECT_NAME} PUBLIC ${OCS2_PINOCCHIO_FLAGS})
@@ -125,6 +127,7 @@ ament_export_dependencies(
   ocs2_robotic_tools
   ocs2_robotic_assets
   ocs2_pinocchio_interface
+  ocs2_collision_nextgen
   ocs2_self_collision
   pinocchio
   Eigen3

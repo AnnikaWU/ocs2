@@ -43,6 +43,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <ocs2_core/penalties/Penalties.h>
 #include <ocs2_core/soft_constraint/StateInputSoftBoxConstraint.h>
 #include <ocs2_core/soft_constraint/StateSoftConstraint.h>
+#include <ocs2_collision_nextgen/CollisionModelCache.h>
 #include <ocs2_oc/synchronized_module/ReferenceManager.h>
 #include <ocs2_pinocchio_interface/PinocchioEndEffectorKinematics.h>
 #include <ocs2_pinocchio_interface/PinocchioEndEffectorKinematicsCppAd.h>
@@ -54,6 +55,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "ocs2_mobile_manipulator/MobileManipulatorPreComputation.h"
 #include "ocs2_mobile_manipulator/ProfilingCollections.h"
 #include "ocs2_mobile_manipulator/constraint/EndEffectorConstraint.h"
+#include "ocs2_mobile_manipulator/constraint/MobileManipulatorNextgenSelfCollisionConstraint.h"
 #include "ocs2_mobile_manipulator/constraint/MobileManipulatorSelfCollisionConstraint.h"
 #include "ocs2_mobile_manipulator/cost/QuadraticInputCost.h"
 #include "ocs2_mobile_manipulator/dynamics/DefaultManipulatorDynamics.h"
@@ -69,6 +71,33 @@ namespace ocs2 {
 namespace mobile_manipulator {
 
 namespace {
+
+enum class SelfCollisionBackend { PinocchioFcl, Nextgen };
+
+SelfCollisionBackend loadSelfCollisionBackend(const boost::property_tree::ptree& pt, const std::string& prefix) {
+  std::string backend = "pinocchio_fcl";
+  loadData::loadPtreeValue(pt, backend, prefix + ".backend", true);
+
+  if (backend == "pinocchio_fcl" || backend == "self_collision" || backend == "fcl") {
+    return SelfCollisionBackend::PinocchioFcl;
+  }
+  if (backend == "nextgen" || backend == "collision_nextgen") {
+    return SelfCollisionBackend::Nextgen;
+  }
+
+  throw std::runtime_error("[MobileManipulatorInterface] Unknown self-collision backend '" + backend +
+                           "'. Supported values are 'pinocchio_fcl' and 'nextgen'.");
+}
+
+const char* toString(SelfCollisionBackend backend) {
+  switch (backend) {
+    case SelfCollisionBackend::PinocchioFcl:
+      return "pinocchio_fcl";
+    case SelfCollisionBackend::Nextgen:
+      return "nextgen";
+  }
+  return "unknown";
+}
 
 std::string resolvePathRelativeToTaskFile(const std::string& path, const std::string& taskFile) {
   if (path.empty()) {
@@ -416,6 +445,7 @@ std::unique_ptr<StateCost> MobileManipulatorInterface::getSelfCollisionConstrain
   loadData::loadPtreeValue(pt, delta, prefix + ".delta", true);
   loadData::loadPtreeValue(pt, minimumDistance, prefix + ".minimumDistance", true);
   loadData::loadPtreeValue(pt, collisionUrdfFile, prefix + ".collisionUrdfFile", true);
+  const SelfCollisionBackend backend = loadSelfCollisionBackend(pt, prefix);
   loadData::loadStdVectorOfPair(taskFile, prefix + ".collisionObjectPairs", collisionObjectPairs, true);
   loadData::loadStdVectorOfPair(taskFile, prefix + ".collisionLinkPairs", collisionLinkPairs, true);
   std::cerr << " #### =============================================================================\n";
@@ -446,8 +476,17 @@ std::unique_ptr<StateCost> MobileManipulatorInterface::getSelfCollisionConstrain
   const size_t numCollisionPairs = geometryInterface.getNumCollisionPairs();
   std::cerr << "SelfCollision: Testing for " << numCollisionPairs << " collision pairs\n";
 
+  auto collisionCache = collision_nextgen::buildCollisionModelCache(collisionPinocchioInterface.getModel(), geometryInterface.getGeometryModel());
+  std::cerr << "SelfCollision: backend " << toString(backend) << '\n';
+  std::cerr << "SelfCollision cache: objects " << collisionCache.objects.size() << ", pairs " << collisionCache.pairs.size()
+            << ", sphere objects " << collisionCache.numSphereObjects << ", unsupported objects "
+            << collisionCache.numUnsupportedObjects << '\n';
+
   std::unique_ptr<StateConstraint> constraint;
-  if (usePreComputation) {
+  if (backend == SelfCollisionBackend::Nextgen) {
+    constraint = std::make_unique<MobileManipulatorNextgenSelfCollisionConstraint>(MobileManipulatorPinocchioMapping(manipulatorModelInfo_),
+                                                                                   std::move(collisionCache), minimumDistance);
+  } else if (usePreComputation) {
     constraint = std::make_unique<MobileManipulatorSelfCollisionConstraint>(MobileManipulatorPinocchioMapping(manipulatorModelInfo_),
                                                                             std::move(geometryInterface), minimumDistance);
   } else {
