@@ -204,6 +204,9 @@ selfCollision
   ; activate self-collision constraint
   activate  true
 
+  ; Self-collision backend: pinocchio_fcl or nextgen.
+  backend "pinocchio_fcl"
+
   ; Use the main mesh/primitive collision URDF for now. Keep this key explicit
   ; so a sphere-only collision URDF can be tested without changing the dynamics URDF.
   collisionUrdfFile  ""

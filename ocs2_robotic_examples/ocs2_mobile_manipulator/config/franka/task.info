@@ -206,6 +206,9 @@ selfCollision
   ; activate self-collision constraint
   activate  true
 
+  ; Self-collision backend: pinocchio_fcl or nextgen.
+  backend "pinocchio_fcl"
+
   ; Self Collision raw object pairs
   collisionObjectPairs
   {
