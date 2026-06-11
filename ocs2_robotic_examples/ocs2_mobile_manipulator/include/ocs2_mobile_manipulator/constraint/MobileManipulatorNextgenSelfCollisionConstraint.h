@@ -40,8 +40,9 @@ namespace mobile_manipulator {
 class MobileManipulatorNextgenSelfCollisionConstraint final : public collision_nextgen::NextgenSelfCollisionConstraint {
  public:
   MobileManipulatorNextgenSelfCollisionConstraint(const PinocchioStateInputMapping<scalar_t>& mapping,
-                                                  collision_nextgen::CollisionModelCache cache, scalar_t minimumDistance)
-      : NextgenSelfCollisionConstraint(mapping, std::move(cache), minimumDistance) {}
+                                                  const pinocchio::Model& model, const pinocchio::GeometryModel& geometryModel,
+                                                  scalar_t minimumDistance)
+      : NextgenSelfCollisionConstraint(mapping, model, geometryModel, minimumDistance) {}
   ~MobileManipulatorNextgenSelfCollisionConstraint() override = default;
   MobileManipulatorNextgenSelfCollisionConstraint(const MobileManipulatorNextgenSelfCollisionConstraint& other) = default;
   MobileManipulatorNextgenSelfCollisionConstraint* clone() const override {

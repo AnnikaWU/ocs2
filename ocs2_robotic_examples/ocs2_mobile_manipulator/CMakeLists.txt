@@ -78,6 +78,18 @@ target_include_directories(ocs2_compare_collision_urdfs
     ${PROJECT_BINARY_DIR}/include
 )
 
+add_executable(ocs2_benchmark_nextgen_self_collision
+  src/BenchmarkNextgenSelfCollision.cpp
+)
+target_link_libraries(ocs2_benchmark_nextgen_self_collision
+  PRIVATE
+    ${PROJECT_NAME}
+)
+target_include_directories(ocs2_benchmark_nextgen_self_collision
+  PRIVATE
+    ${PROJECT_BINARY_DIR}/include
+)
+
 #############
 ## Install ##
 #############
@@ -88,7 +100,9 @@ install(TARGETS ${PROJECT_NAME}
   LIBRARY DESTINATION lib
   RUNTIME DESTINATION bin
 )
-install(TARGETS ocs2_compare_collision_urdfs
+install(TARGETS
+    ocs2_compare_collision_urdfs
+    ocs2_benchmark_nextgen_self_collision
   RUNTIME DESTINATION lib/${PROJECT_NAME}
 )
 install(DIRECTORY include/${PROJECT_NAME}/
@@ -155,6 +169,7 @@ if(BUILD_TESTING)
   endmacro()
 
   add_ocs2_test(SelfCollisionTest test/testSelfCollision.cpp)
+  add_ocs2_test(NextgenSelfCollisionTest test/testNextgenSelfCollision.cpp)
   add_ocs2_test(EndEffectorConstraintTest test/testEndEffectorConstraint.cpp)
   add_ocs2_test(DummyMobileManipulatorTest test/testDummyMobileManipulator.cpp)
   set_tests_properties(DummyMobileManipulatorTest PROPERTIES TIMEOUT 600)

@@ -29,47 +29,63 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #pragma once
 
-#include <memory>
-#include <string>
-#include <utility>
-
-#include <ocs2_core/constraint/StateConstraint.h>
-#include <ocs2_pinocchio_interface/PinocchioInterface.h>
-#include <ocs2_pinocchio_interface/PinocchioStateInputMapping.h>
-#include <pinocchio/multibody/fwd.hpp>
-
-namespace pinocchio {
-struct GeometryModel;
-}  // namespace pinocchio
+#include <cstddef>
+#include <limits>
+#include <new>
+#include <type_traits>
 
 namespace ocs2 {
 namespace collision_nextgen {
-
 namespace impl {
-class SphereCollisionModel;
-}  // namespace impl
+namespace simd {
 
-class NextgenSelfCollisionConstraint : public StateConstraint {
+inline constexpr size_t kDefaultAlignment = 64;
+
+template <typename T, size_t Alignment = kDefaultAlignment>
+class AlignedAllocator {
  public:
-  NextgenSelfCollisionConstraint(const PinocchioStateInputMapping<scalar_t>& mapping, const pinocchio::Model& model,
-                                 const pinocchio::GeometryModel& geometryModel, scalar_t minimumDistance);
-  NextgenSelfCollisionConstraint(const NextgenSelfCollisionConstraint& other);
-  ~NextgenSelfCollisionConstraint() override;
+  static_assert(Alignment >= alignof(T), "Alignment must satisfy the allocated type alignment.");
+  static_assert((Alignment & (Alignment - 1)) == 0, "Alignment must be a power of two.");
 
-  NextgenSelfCollisionConstraint* clone() const override = 0;
+  using value_type = T;
+  using size_type = std::size_t;
+  using difference_type = std::ptrdiff_t;
+  using propagate_on_container_move_assignment = std::true_type;
+  using is_always_equal = std::true_type;
 
-  size_t getNumConstraints(scalar_t time) const override;
-  vector_t getValue(scalar_t time, const vector_t& state, const PreComputation& preComputation) const override;
-  VectorFunctionLinearApproximation getLinearApproximation(scalar_t time, const vector_t& state,
-                                                           const PreComputation& preComputation) const override;
+  template <typename U>
+  struct rebind {
+    using other = AlignedAllocator<U, Alignment>;
+  };
 
- protected:
-  virtual const PinocchioInterface& getPinocchioInterface(const PreComputation& preComputation) const = 0;
+  AlignedAllocator() noexcept = default;
 
-  std::unique_ptr<impl::SphereCollisionModel> sphereModelPtr_;
-  scalar_t minimumDistance_ = 0.0;
-  std::unique_ptr<PinocchioStateInputMapping<scalar_t>> mappingPtr_;
+  template <typename U>
+  AlignedAllocator(const AlignedAllocator<U, Alignment>&) noexcept {}
+
+  [[nodiscard]] T* allocate(size_t n) {
+    if (n > std::numeric_limits<size_t>::max() / sizeof(T)) {
+      throw std::bad_array_new_length();
+    }
+    return static_cast<T*>(::operator new(n * sizeof(T), std::align_val_t{Alignment}));
+  }
+
+  void deallocate(T* ptr, size_t) noexcept {
+    ::operator delete(ptr, std::align_val_t{Alignment});
+  }
 };
 
+template <typename T, typename U, size_t Alignment>
+bool operator==(const AlignedAllocator<T, Alignment>&, const AlignedAllocator<U, Alignment>&) noexcept {
+  return true;
+}
+
+template <typename T, typename U, size_t Alignment>
+bool operator!=(const AlignedAllocator<T, Alignment>&, const AlignedAllocator<U, Alignment>&) noexcept {
+  return false;
+}
+
+}  // namespace simd
+}  // namespace impl
 }  // namespace collision_nextgen
 }  // namespace ocs2

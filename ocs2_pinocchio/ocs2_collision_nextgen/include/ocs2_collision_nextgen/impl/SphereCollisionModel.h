@@ -29,13 +29,15 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #pragma once
 
-#include <memory>
+#include <cstdint>
 #include <string>
-#include <utility>
+#include <vector>
 
-#include <ocs2_core/constraint/StateConstraint.h>
+#include <Eigen/Core>
+
+#include <ocs2_collision_nextgen/impl/simd/AlignedAllocator.h>
+#include <ocs2_core/Types.h>
 #include <ocs2_pinocchio_interface/PinocchioInterface.h>
-#include <ocs2_pinocchio_interface/PinocchioStateInputMapping.h>
 #include <pinocchio/multibody/fwd.hpp>
 
 namespace pinocchio {
@@ -44,32 +46,56 @@ struct GeometryModel;
 
 namespace ocs2 {
 namespace collision_nextgen {
-
 namespace impl {
-class SphereCollisionModel;
-}  // namespace impl
 
-class NextgenSelfCollisionConstraint : public StateConstraint {
- public:
-  NextgenSelfCollisionConstraint(const PinocchioStateInputMapping<scalar_t>& mapping, const pinocchio::Model& model,
-                                 const pinocchio::GeometryModel& geometryModel, scalar_t minimumDistance);
-  NextgenSelfCollisionConstraint(const NextgenSelfCollisionConstraint& other);
-  ~NextgenSelfCollisionConstraint() override;
+using vector3_t = Eigen::Matrix<scalar_t, 3, 1>;
 
-  NextgenSelfCollisionConstraint* clone() const override = 0;
+template <typename T>
+using AlignedVector = std::vector<T, simd::AlignedAllocator<T>>;
 
-  size_t getNumConstraints(scalar_t time) const override;
-  vector_t getValue(scalar_t time, const vector_t& state, const PreComputation& preComputation) const override;
-  VectorFunctionLinearApproximation getLinearApproximation(scalar_t time, const vector_t& state,
-                                                           const PreComputation& preComputation) const override;
-
- protected:
-  virtual const PinocchioInterface& getPinocchioInterface(const PreComputation& preComputation) const = 0;
-
-  std::unique_ptr<impl::SphereCollisionModel> sphereModelPtr_;
-  scalar_t minimumDistance_ = 0.0;
-  std::unique_ptr<PinocchioStateInputMapping<scalar_t>> mappingPtr_;
+struct SphereCollisionEvaluation {
+  vector_t distances;
+  std::vector<vector3_t> firstCenters;
+  std::vector<vector3_t> secondCenters;
+  std::vector<vector3_t> normals;
 };
 
+class SphereCollisionModel final {
+ public:
+  SphereCollisionModel(const pinocchio::Model& model, const pinocchio::GeometryModel& geometryModel);
+
+  size_t getNumObjects() const { return parentJoint_.size(); }
+  size_t getNumPairs() const { return firstObject_.size(); }
+  bool empty() const { return getNumPairs() == 0; }
+
+  vector_t getDistances(const PinocchioInterface& pinocchioInterface) const;
+  SphereCollisionEvaluation evaluate(const PinocchioInterface& pinocchioInterface) const;
+
+  size_t getFirstParentJoint(size_t pairIndex) const;
+  size_t getSecondParentJoint(size_t pairIndex) const;
+
+ private:
+  struct WorldCenterScratch {
+    AlignedVector<double> x;
+    AlignedVector<double> y;
+    AlignedVector<double> z;
+  };
+
+  WorldCenterScratch computeWorldCenters(const PinocchioInterface& pinocchioInterface) const;
+  void computeDistances(const WorldCenterScratch& worldCenters, double* distances, double* normalX, double* normalY,
+                        double* normalZ) const;
+
+  std::vector<std::string> objectNames_;
+  std::vector<size_t> parentJoint_;
+  AlignedVector<double> localX_;
+  AlignedVector<double> localY_;
+  AlignedVector<double> localZ_;
+  AlignedVector<double> radius_;
+  AlignedVector<std::int64_t> firstObject_;
+  AlignedVector<std::int64_t> secondObject_;
+  AlignedVector<double> pairRadiusSum_;
+};
+
+}  // namespace impl
 }  // namespace collision_nextgen
 }  // namespace ocs2

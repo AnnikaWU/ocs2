@@ -43,7 +43,6 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <ocs2_core/penalties/Penalties.h>
 #include <ocs2_core/soft_constraint/StateInputSoftBoxConstraint.h>
 #include <ocs2_core/soft_constraint/StateSoftConstraint.h>
-#include <ocs2_collision_nextgen/CollisionModelCache.h>
 #include <ocs2_oc/synchronized_module/ReferenceManager.h>
 #include <ocs2_pinocchio_interface/PinocchioEndEffectorKinematics.h>
 #include <ocs2_pinocchio_interface/PinocchioEndEffectorKinematicsCppAd.h>
@@ -450,6 +449,13 @@ std::unique_ptr<StateCost> MobileManipulatorInterface::getSelfCollisionConstrain
   loadData::loadStdVectorOfPair(taskFile, prefix + ".collisionLinkPairs", collisionLinkPairs, true);
   std::cerr << " #### =============================================================================\n";
 
+  if (!collisionObjectPairs.empty()) {
+    std::cerr << "WARNING: SelfCollision raw collisionObjectPairs contains " << collisionObjectPairs.size()
+              << " geometry-object index pairs. These indices are interpreted in the selected collision URDF GeometryModel and "
+                 "may point to different objects if collisionUrdfFile changes.\n"
+                 "Highly recommend using collisionLinkPairs for dedicated collision URDFs.\n";
+  }
+
   const bool useDedicatedCollisionUrdf = !collisionUrdfFile.empty();
   if (!useDedicatedCollisionUrdf) {
     collisionUrdfFile = urdfFile;
@@ -476,16 +482,13 @@ std::unique_ptr<StateCost> MobileManipulatorInterface::getSelfCollisionConstrain
   const size_t numCollisionPairs = geometryInterface.getNumCollisionPairs();
   std::cerr << "SelfCollision: Testing for " << numCollisionPairs << " collision pairs\n";
 
-  auto collisionCache = collision_nextgen::buildCollisionModelCache(collisionPinocchioInterface.getModel(), geometryInterface.getGeometryModel());
   std::cerr << "SelfCollision: backend " << toString(backend) << '\n';
-  std::cerr << "SelfCollision cache: objects " << collisionCache.objects.size() << ", pairs " << collisionCache.pairs.size()
-            << ", sphere objects " << collisionCache.numSphereObjects << ", unsupported objects "
-            << collisionCache.numUnsupportedObjects << '\n';
 
   std::unique_ptr<StateConstraint> constraint;
   if (backend == SelfCollisionBackend::Nextgen) {
     constraint = std::make_unique<MobileManipulatorNextgenSelfCollisionConstraint>(MobileManipulatorPinocchioMapping(manipulatorModelInfo_),
-                                                                                   std::move(collisionCache), minimumDistance);
+                                                                                   collisionPinocchioInterface.getModel(),
+                                                                                   geometryInterface.getGeometryModel(), minimumDistance);
   } else if (usePreComputation) {
     constraint = std::make_unique<MobileManipulatorSelfCollisionConstraint>(MobileManipulatorPinocchioMapping(manipulatorModelInfo_),
                                                                             std::move(geometryInterface), minimumDistance);

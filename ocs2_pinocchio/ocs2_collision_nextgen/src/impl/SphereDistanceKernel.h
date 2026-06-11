@@ -29,58 +29,17 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #pragma once
 
-#include <array>
-#include <string>
-#include <vector>
-
-#include <ocs2_core/Types.h>
-#include <pinocchio/multibody/fwd.hpp>
+#include <cstdint>
+#include <cstddef>
 
 namespace ocs2 {
 namespace collision_nextgen {
+namespace impl {
 
-enum class GeometryPrimitiveType { Unsupported, Sphere };
+void computeSpherePairDistances(const double* worldX, const double* worldY, const double* worldZ, const std::int64_t* firstObject,
+                                const std::int64_t* secondObject, const double* radiusSum, size_t numPairs, double* distances,
+                                double* normalX, double* normalY, double* normalZ);
 
-struct CollisionObjectCache {
-  std::string name;
-  std::string parentFrameName;
-  size_t geometryIndex = 0;
-  size_t parentFrame = 0;
-  size_t parentJoint = 0;
-  GeometryPrimitiveType primitiveType = GeometryPrimitiveType::Unsupported;
-  std::array<scalar_t, 3> localPosition{0.0, 0.0, 0.0};
-  scalar_t sphereRadius = 0.0;
-};
-
-struct CollisionPairCache {
-  size_t firstObject = 0;
-  size_t secondObject = 0;
-  size_t firstParentFrame = 0;
-  size_t secondParentFrame = 0;
-  size_t firstParentJoint = 0;
-  size_t secondParentJoint = 0;
-};
-
-struct CollisionModelCache {
-  std::vector<CollisionObjectCache> objects;
-  std::vector<CollisionPairCache> pairs;
-  size_t numSphereObjects = 0;
-  size_t numUnsupportedObjects = 0;
-
-  size_t getNumCollisionPairs() const { return pairs.size(); }
-  bool isSphereOnly() const { return numUnsupportedObjects == 0; }
-};
-
-/**
- * Cached data extracted after URDF geometry loading and collision-link expansion.
- *
- * The cache intentionally stores state-independent data only: object/frame/joint
- * indices, local sphere parameters, and expanded object pairs. World placements,
- * nearest points, and Jacobian workspaces belong to per-evaluation scratch data.
- */
-CollisionModelCache buildCollisionModelCache(const pinocchio::Model& model, const pinocchio::GeometryModel& geometryModel);
-
-std::string toString(GeometryPrimitiveType type);
-
+}  // namespace impl
 }  // namespace collision_nextgen
 }  // namespace ocs2

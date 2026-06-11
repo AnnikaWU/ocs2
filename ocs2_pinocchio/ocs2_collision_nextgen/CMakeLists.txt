@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 3.5)
 project(ocs2_collision_nextgen)
 
+include(CheckCXXCompilerFlag)
+
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
@@ -12,10 +14,40 @@ find_package(hpp-fcl REQUIRED)
 find_package(Eigen3 3.3 REQUIRED NO_MODULE)
 find_package(Boost REQUIRED COMPONENTS system filesystem log_setup log)
 
-add_library(${PROJECT_NAME}
-  src/CollisionModelCache.cpp
+set(${PROJECT_NAME}_SOURCES
   src/NextgenSelfCollisionConstraint.cpp
+  src/impl/SphereDistanceKernel.cpp
+  src/impl/SphereCollisionModel.cpp
 )
+
+add_library(${PROJECT_NAME}
+  ${${PROJECT_NAME}_SOURCES}
+)
+
+set(${PROJECT_NAME}_PINOCCHIO_IMPL_COMPILE_OPTIONS "-std=gnu++20")
+set(${PROJECT_NAME}_SIMD_IMPL_COMPILE_OPTIONS "-std=gnu++20")
+set(OCS2_COLLISION_NEXTGEN_AVX2_ENABLED FALSE)
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64|i.86")
+  check_cxx_compiler_flag("-mavx2" OCS2_COLLISION_NEXTGEN_HAS_AVX2_FLAG)
+  if(OCS2_COLLISION_NEXTGEN_HAS_AVX2_FLAG)
+    set(OCS2_COLLISION_NEXTGEN_AVX2_ENABLED TRUE)
+    list(APPEND ${PROJECT_NAME}_SIMD_IMPL_COMPILE_OPTIONS "-mavx2")
+    target_compile_definitions(${PROJECT_NAME} PRIVATE OCS2_COLLISION_NEXTGEN_USE_AVX2=1)
+  endif()
+endif()
+
+set_source_files_properties(
+  src/impl/SphereCollisionModel.cpp
+  PROPERTIES
+    COMPILE_OPTIONS "${${PROJECT_NAME}_PINOCCHIO_IMPL_COMPILE_OPTIONS}"
+)
+
+set_source_files_properties(
+  src/impl/SphereDistanceKernel.cpp
+  PROPERTIES
+    COMPILE_OPTIONS "${${PROJECT_NAME}_SIMD_IMPL_COMPILE_OPTIONS}"
+)
+
 target_link_libraries(${PROJECT_NAME}
   PUBLIC
     pinocchio::pinocchio
@@ -66,5 +98,24 @@ ament_export_dependencies(
   Eigen3
   Boost
 )
+
+############
+# Testing ##
+############
+
+if(BUILD_TESTING)
+  find_package(ament_cmake_gtest REQUIRED)
+
+  ament_add_gtest(SimdVectorTest
+    test/testSimdVector.cpp
+  )
+  target_link_libraries(SimdVectorTest
+    ${PROJECT_NAME}
+  )
+  target_compile_options(SimdVectorTest PRIVATE ${${PROJECT_NAME}_SIMD_IMPL_COMPILE_OPTIONS})
+  if(OCS2_COLLISION_NEXTGEN_AVX2_ENABLED)
+    target_compile_definitions(SimdVectorTest PRIVATE OCS2_COLLISION_NEXTGEN_USE_AVX2=1)
+  endif()
+endif()
 
 ament_package()
