@@ -78,18 +78,6 @@ target_include_directories(ocs2_compare_collision_urdfs
     ${PROJECT_BINARY_DIR}/include
 )
 
-add_executable(ocs2_benchmark_nextgen_self_collision
-  src/BenchmarkNextgenSelfCollision.cpp
-)
-target_link_libraries(ocs2_benchmark_nextgen_self_collision
-  PRIVATE
-    ${PROJECT_NAME}
-)
-target_include_directories(ocs2_benchmark_nextgen_self_collision
-  PRIVATE
-    ${PROJECT_BINARY_DIR}/include
-)
-
 #############
 ## Install ##
 #############
@@ -102,7 +90,6 @@ install(TARGETS ${PROJECT_NAME}
 )
 install(TARGETS
     ocs2_compare_collision_urdfs
-    ocs2_benchmark_nextgen_self_collision
   RUNTIME DESTINATION lib/${PROJECT_NAME}
 )
 install(DIRECTORY include/${PROJECT_NAME}/
