@@ -36,6 +36,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include "ocs2_mpc/MPC_Settings.h"
 
+#include <functional>
+
 namespace ocs2 {
 
 /**
@@ -79,6 +81,11 @@ class MPC_BASE {
   /** Gets the MPC settings. */
   const mpc::Settings& settings() const { return mpcSettings_; }
 
+  /** Optional callbacks around a real MPC solve. Intended for instrumentation. */
+  using RunStartCallback = std::function<void(scalar_t, const vector_t&)>;
+  using RunFinishCallback = std::function<void(bool)>;
+  void setRunCallbacks(RunStartCallback startCallback, RunFinishCallback finishCallback);
+
  protected:
   /**
    * Solves the optimal control problem for the given state and time period ([initTime,finalTime]).
@@ -97,6 +104,8 @@ class MPC_BASE {
   const mpc::Settings mpcSettings_;
 
   benchmark::RepeatedTimer mpcTimer_;
+  RunStartCallback runStartCallback_;
+  RunFinishCallback runFinishCallback_;
 };
 
 }  // namespace ocs2
