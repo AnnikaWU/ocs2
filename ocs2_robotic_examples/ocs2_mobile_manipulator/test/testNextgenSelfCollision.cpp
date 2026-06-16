@@ -40,6 +40,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include "ocs2_mobile_manipulator/FactoryFunctions.h"
 #include "ocs2_mobile_manipulator/MobileManipulatorInterface.h"
+#include "ocs2_mobile_manipulator/MobileManipulatorPreComputation.h"
+#include "ocs2_mobile_manipulator/constraint/MobileManipulatorNextgenSelfCollisionConstraint.h"
+#include "ocs2_mobile_manipulator/constraint/MobileManipulatorSelfCollisionConstraint.h"
 #include "ocs2_mobile_manipulator/package_path.h"
 
 using namespace ocs2;
@@ -71,4 +74,47 @@ TEST(NextgenSelfCollision, SphereSoADistancesMatchPinocchioFcl) {
   for (int i = 0; i < nextgenDistances.rows(); ++i) {
     EXPECT_NEAR(nextgenDistances[i], fclDistances[static_cast<size_t>(i)].min_distance, 1e-9);
   }
+}
+
+TEST(NextgenSelfCollision, LinearApproximationMatchesPinocchioFcl) {
+  const std::string taskFile = ocs2::mobile_manipulator::getPath() + "/config/franka/task.info";
+  const std::string sphereUrdf = ocs2::mobile_manipulator::getPath() + "/config/franka/panda_collision_spheres.urdf";
+
+  const ManipulatorModelType modelType = mobile_manipulator::loadManipulatorType(taskFile, "model_information.manipulatorModelType");
+  std::vector<std::string> removeJointNames;
+  loadData::loadStdVector<std::string>(taskFile, "model_information.removeJoints", removeJointNames, false);
+
+  std::string baseFrame;
+  std::string eeFrame;
+  loadData::loadCppDataType(taskFile, "model_information.baseFrame", baseFrame);
+  loadData::loadCppDataType(taskFile, "model_information.eeFrame", eeFrame);
+
+  scalar_t minimumDistance = 0.0;
+  loadData::loadCppDataType(taskFile, "selfCollision.minimumDistance", minimumDistance);
+
+  std::vector<std::pair<std::string, std::string>> collisionLinkPairs;
+  loadData::loadStdVectorOfPair(taskFile, "selfCollision.collisionLinkPairs", collisionLinkPairs, true);
+
+  PinocchioInterface pinocchioInterface = createPinocchioInterface(sphereUrdf, modelType, removeJointNames);
+  const ManipulatorModelInfo modelInfo = createManipulatorModelInfo(pinocchioInterface, modelType, baseFrame, eeFrame);
+  PinocchioGeometryInterface geometryInterface(pinocchioInterface, collisionLinkPairs);
+  MobileManipulatorPreComputation preComputation(pinocchioInterface, modelInfo);
+
+  vector_t state = vector_t::Zero(modelInfo.stateDim);
+  state << 0.0, 0.171, 0.114, -1.57, 0.05, 1.57, 0.469;
+  const vector_t input = vector_t::Zero(modelInfo.inputDim);
+  preComputation.request(Request::SoftConstraint + Request::Approximation, 0.0, state, input);
+
+  MobileManipulatorSelfCollisionConstraint fclConstraint(MobileManipulatorPinocchioMapping(modelInfo),
+                                                         PinocchioGeometryInterface(pinocchioInterface, collisionLinkPairs),
+                                                         minimumDistance);
+  MobileManipulatorNextgenSelfCollisionConstraint nextgenConstraint(MobileManipulatorPinocchioMapping(modelInfo),
+                                                                    pinocchioInterface.getModel(),
+                                                                    geometryInterface.getGeometryModel(), minimumDistance);
+
+  const auto fclLinear = fclConstraint.getLinearApproximation(0.0, state, preComputation);
+  const auto nextgenLinear = nextgenConstraint.getLinearApproximation(0.0, state, preComputation);
+
+  ASSERT_TRUE(nextgenLinear.f.isApprox(fclLinear.f, 1e-9));
+  ASSERT_TRUE(nextgenLinear.dfdx.isApprox(fclLinear.dfdx, 1e-9));
 }

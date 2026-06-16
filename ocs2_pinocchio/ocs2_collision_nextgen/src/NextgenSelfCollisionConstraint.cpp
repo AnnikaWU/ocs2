@@ -31,6 +31,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include <ocs2_collision_nextgen/impl/SphereCollisionModel.h>
 
+#include <Eigen/Geometry>
+
 #include <pinocchio/algorithm/jacobian.hpp>
 
 #include <memory>
@@ -44,23 +46,6 @@ namespace collision_nextgen {
 namespace {
 
 using vector3_t = impl::vector3_t;
-
-Eigen::Matrix<scalar_t, 3, 3> skewSymmetricMatrix(const vector3_t& vector) {
-  Eigen::Matrix<scalar_t, 3, 3> skew;
-  skew << 0.0, -vector.z(), vector.y(), vector.z(), 0.0, -vector.x(), -vector.y(), vector.x(), 0.0;
-  return skew;
-}
-
-matrix_t getPointJacobian(const PinocchioInterface& pinocchioInterface, size_t joint, const vector3_t& point) {
-  const auto& model = pinocchioInterface.getModel();
-  const auto& data = pinocchioInterface.getData();
-
-  matrix_t jointJacobian = matrix_t::Zero(6, model.nv);
-  pinocchio::getJointJacobian(model, data, joint, pinocchio::ReferenceFrame::LOCAL_WORLD_ALIGNED, jointJacobian);
-
-  const vector3_t pointOffset = point - data.oMi[joint].translation();
-  return jointJacobian.topRows(3) - skewSymmetricMatrix(pointOffset) * jointJacobian.bottomRows(3);
-}
 
 }  // namespace
 
@@ -105,14 +90,34 @@ VectorFunctionLinearApproximation NextgenSelfCollisionConstraint::getLinearAppro
   constraint.f.array() -= minimumDistance_;
 
   matrix_t dfdq = matrix_t::Zero(evaluation.distances.rows(), model.nq);
+  std::vector<matrix_t> jointJacobianCache(model.joints.size());
+  std::vector<bool> jointJacobianCached(model.joints.size(), false);
+  auto getCachedJointJacobian = [&](size_t joint) -> const matrix_t& {
+    if (joint >= jointJacobianCache.size()) {
+      throw std::runtime_error("[NextgenSelfCollisionConstraint] parent joint index is outside the Pinocchio model.");
+    }
+    if (!jointJacobianCached[joint]) {
+      jointJacobianCache[joint].setZero(6, model.nv);
+      pinocchio::getJointJacobian(model, pinocchioInterface.getData(), joint, pinocchio::ReferenceFrame::LOCAL_WORLD_ALIGNED,
+                                  jointJacobianCache[joint]);
+      jointJacobianCached[joint] = true;
+    }
+    return jointJacobianCache[joint];
+  };
+
   for (int i = 0; i < evaluation.distances.rows(); ++i) {
     const auto pairIndex = static_cast<size_t>(i);
-    const matrix_t firstJacobian = getPointJacobian(pinocchioInterface, sphereModelPtr_->getFirstParentJoint(pairIndex),
-                                                    evaluation.firstCenters[pairIndex]);
-    const matrix_t secondJacobian = getPointJacobian(pinocchioInterface, sphereModelPtr_->getSecondParentJoint(pairIndex),
-                                                     evaluation.secondCenters[pairIndex]);
-    const matrix_t distanceJacobian = evaluation.normals[pairIndex].transpose() * (secondJacobian - firstJacobian);
-    dfdq.leftCols(distanceJacobian.cols()).row(i) = distanceJacobian;
+    const auto firstJoint = sphereModelPtr_->getFirstParentJoint(pairIndex);
+    const auto secondJoint = sphereModelPtr_->getSecondParentJoint(pairIndex);
+    const auto& firstJacobian = getCachedJointJacobian(firstJoint);
+    const auto& secondJacobian = getCachedJointJacobian(secondJoint);
+    const auto& normal = evaluation.normals[pairIndex];
+    const vector3_t firstOffset = evaluation.firstCenters[pairIndex] - pinocchioInterface.getData().oMi[firstJoint].translation();
+    const vector3_t secondOffset = evaluation.secondCenters[pairIndex] - pinocchioInterface.getData().oMi[secondJoint].translation();
+
+    dfdq.row(i).leftCols(model.nv).noalias() = normal.transpose() * (secondJacobian.topRows(3) - firstJacobian.topRows(3)) -
+                                               normal.cross(secondOffset).transpose() * secondJacobian.bottomRows(3) +
+                                               normal.cross(firstOffset).transpose() * firstJacobian.bottomRows(3);
   }
 
   matrix_t dfdv = matrix_t::Zero(dfdq.rows(), dfdq.cols());
