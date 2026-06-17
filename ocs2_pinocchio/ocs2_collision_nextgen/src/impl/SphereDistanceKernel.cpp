@@ -50,18 +50,20 @@ inline void computeSpherePairDistanceScalar(const double* worldX, const double* 
   const double dy = worldY[second] - worldY[first];
   const double dz = worldZ[second] - worldZ[first];
   const double centerDistance = std::sqrt(dx * dx + dy * dy + dz * dz);
-  distances[i] = centerDistance - radiusSum[i];
+  const double signedDistance = centerDistance - radiusSum[i];
+  distances[i] = signedDistance;
 
   if (normalX != nullptr && normalY != nullptr && normalZ != nullptr) {
+    const double nearestPointDirectionSign = signedDistance < 0.0 ? -1.0 : 1.0;
     if (centerDistance < kEpsilon) {
-      normalX[i] = 1.0;
+      normalX[i] = nearestPointDirectionSign;
       normalY[i] = 0.0;
       normalZ[i] = 0.0;
     } else {
       const double invDistance = 1.0 / centerDistance;
-      normalX[i] = dx * invDistance;
-      normalY[i] = dy * invDistance;
-      normalZ[i] = dz * invDistance;
+      normalX[i] = nearestPointDirectionSign * dx * invDistance;
+      normalY[i] = nearestPointDirectionSign * dy * invDistance;
+      normalZ[i] = nearestPointDirectionSign * dz * invDistance;
     }
   }
 }
@@ -75,6 +77,7 @@ void computeSpherePairDistancesImpl(const double* worldX, const double* worldY, 
   constexpr double kEpsilonValue = 1e-12;
   const NativePacket epsilon = NativePacket::set(kEpsilonValue);
   const NativePacket one = NativePacket::set(1.0);
+  const NativePacket negativeOne = NativePacket::set(-1.0);
   const NativePacket zero = NativePacket::set(0.0);
 
   size_t i = 0;
@@ -90,15 +93,18 @@ void computeSpherePairDistancesImpl(const double* worldX, const double* worldY, 
     const NativePacket dy = secondY - firstY;
     const NativePacket dz = secondZ - firstZ;
     const NativePacket centerDistance = simd::sqrt(dx * dx + dy * dy + dz * dz);
-    (centerDistance - NativePacket::loadAligned(radiusSum + i)).storeUnaligned(distances + i);
+    const NativePacket signedDistance = centerDistance - NativePacket::loadAligned(radiusSum + i);
+    signedDistance.storeUnaligned(distances + i);
 
     if (normalX != nullptr && normalY != nullptr && normalZ != nullptr) {
       const auto zeroDistanceMask = centerDistance < epsilon;
+      const NativePacket nearestPointDirectionSign = simd::select(signedDistance < zero, negativeOne, one);
       const NativePacket safeDistance = simd::max(centerDistance, epsilon);
       const NativePacket invDistance = one / safeDistance;
-      simd::select(zeroDistanceMask, one, dx * invDistance).storeAligned(normalX + i);
-      simd::select(zeroDistanceMask, zero, dy * invDistance).storeAligned(normalY + i);
-      simd::select(zeroDistanceMask, zero, dz * invDistance).storeAligned(normalZ + i);
+      simd::select(zeroDistanceMask, nearestPointDirectionSign, nearestPointDirectionSign * dx * invDistance)
+          .storeAligned(normalX + i);
+      simd::select(zeroDistanceMask, zero, nearestPointDirectionSign * dy * invDistance).storeAligned(normalY + i);
+      simd::select(zeroDistanceMask, zero, nearestPointDirectionSign * dz * invDistance).storeAligned(normalZ + i);
     }
   }
 
