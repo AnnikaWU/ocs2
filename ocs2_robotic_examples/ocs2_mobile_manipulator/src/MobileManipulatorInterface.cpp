@@ -28,6 +28,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ******************************************************************************/
 
 #include <sstream>
+#include <stdexcept>
 #include <string>
 
 #include <pinocchio/fwd.hpp>  // forward declarations must be included first.
@@ -448,6 +449,11 @@ std::unique_ptr<StateCost> MobileManipulatorInterface::getSelfCollisionConstrain
   loadData::loadStdVectorOfPair(taskFile, prefix + ".collisionObjectPairs", collisionObjectPairs, true);
   loadData::loadStdVectorOfPair(taskFile, prefix + ".collisionLinkPairs", collisionLinkPairs, true);
   std::cerr << " #### =============================================================================\n";
+
+  if (backend == SelfCollisionBackend::Nextgen && !usePreComputation) {
+    throw std::invalid_argument("[MobileManipulatorInterface] " + prefix +
+                                ".backend \"nextgen\" requires model_settings.usePreComputation true.");
+  }
 
   if (!collisionObjectPairs.empty()) {
     std::cerr << "WARNING: SelfCollision raw collisionObjectPairs contains " << collisionObjectPairs.size()
