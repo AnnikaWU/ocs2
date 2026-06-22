@@ -111,14 +111,13 @@ VectorFunctionLinearApproximation NextgenSelfCollisionConstraint::getLinearAppro
     const auto secondJoint = sphereModelPtr_->getSecondParentJoint(pairIndex);
     const auto& firstJacobian = getCachedJointJacobian(firstJoint);
     const auto& secondJacobian = getCachedJointJacobian(secondJoint);
-    const auto& normal = evaluation.normals[pairIndex];
+    const auto& normal = evaluation.jacobianNormals[pairIndex];
     const vector3_t firstOffset = evaluation.firstCenters[pairIndex] - pinocchioInterface.getData().oMi[firstJoint].translation();
     const vector3_t secondOffset = evaluation.secondCenters[pairIndex] - pinocchioInterface.getData().oMi[secondJoint].translation();
 
-    dfdq.row(i).leftCols(model.nv).noalias() = (evaluation.distances[pairIndex] < 0 ? -1.0 : 1.0) *
-                                               (normal.transpose() * (secondJacobian.topRows(3) - firstJacobian.topRows(3)) -
+    dfdq.row(i).leftCols(model.nv).noalias() = normal.transpose() * (secondJacobian.topRows(3) - firstJacobian.topRows(3)) -
                                                normal.cross(secondOffset).transpose() * secondJacobian.bottomRows(3) +
-                                               normal.cross(firstOffset).transpose() * firstJacobian.bottomRows(3));
+                                               normal.cross(firstOffset).transpose() * firstJacobian.bottomRows(3);
   }
 
   matrix_t dfdv = matrix_t::Zero(dfdq.rows(), dfdq.cols());

@@ -28,8 +28,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ******************************************************************************/
 
 #include <ocs2_collision_nextgen/impl/SphereCollisionModel.h>
-
-#include "SphereDistanceKernel.h"
+#include <ocs2_collision_nextgen/impl/SphereDistanceKernel.h>
 
 #include <limits>
 #include <stdexcept>
@@ -195,7 +194,7 @@ SphereCollisionEvaluation SphereCollisionModel::evaluate(const PinocchioInterfac
   evaluation.distances.resize(getNumPairs());
   evaluation.firstCenters.resize(getNumPairs());
   evaluation.secondCenters.resize(getNumPairs());
-  evaluation.normals.resize(getNumPairs());
+  evaluation.jacobianNormals.resize(getNumPairs());
 
   AlignedVector<double> normalX(getNumPairs());
   AlignedVector<double> normalY(getNumPairs());
@@ -209,7 +208,7 @@ SphereCollisionEvaluation SphereCollisionModel::evaluate(const PinocchioInterfac
     const auto second = static_cast<size_t>(secondObject_[pairIndex]);
     evaluation.firstCenters[pairIndex] = vector3_t(worldCenters.x[first], worldCenters.y[first], worldCenters.z[first]);
     evaluation.secondCenters[pairIndex] = vector3_t(worldCenters.x[second], worldCenters.y[second], worldCenters.z[second]);
-    evaluation.normals[pairIndex] = vector3_t(normalX[pairIndex], normalY[pairIndex], normalZ[pairIndex]);
+    evaluation.jacobianNormals[pairIndex] = vector3_t(normalX[pairIndex], normalY[pairIndex], normalZ[pairIndex]);
   }
 
   return evaluation;

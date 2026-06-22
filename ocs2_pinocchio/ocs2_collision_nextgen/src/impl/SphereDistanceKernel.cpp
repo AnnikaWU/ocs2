@@ -27,7 +27,7 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ******************************************************************************/
 
-#include "SphereDistanceKernel.h"
+#include <ocs2_collision_nextgen/impl/SphereDistanceKernel.h>
 
 #include <ocs2_collision_nextgen/impl/simd/Vector.h>
 
@@ -54,16 +54,15 @@ inline void computeSpherePairDistanceScalar(const double* worldX, const double* 
   distances[i] = signedDistance;
 
   if (normalX != nullptr && normalY != nullptr && normalZ != nullptr) {
-    const double nearestPointDirectionSign = signedDistance < 0.0 ? -1.0 : 1.0;
     if (centerDistance < kEpsilon) {
-      normalX[i] = nearestPointDirectionSign;
+      normalX[i] = 1.0;
       normalY[i] = 0.0;
       normalZ[i] = 0.0;
     } else {
       const double invDistance = 1.0 / centerDistance;
-      normalX[i] = nearestPointDirectionSign * dx * invDistance;
-      normalY[i] = nearestPointDirectionSign * dy * invDistance;
-      normalZ[i] = nearestPointDirectionSign * dz * invDistance;
+      normalX[i] = dx * invDistance;
+      normalY[i] = dy * invDistance;
+      normalZ[i] = dz * invDistance;
     }
   }
 }
@@ -77,8 +76,8 @@ void computeSpherePairDistancesImpl(const double* worldX, const double* worldY, 
   constexpr double kEpsilonValue = 1e-12;
   const NativePacket epsilon = NativePacket::set(kEpsilonValue);
   const NativePacket one = NativePacket::set(1.0);
-  const NativePacket negativeOne = NativePacket::set(-1.0);
   const NativePacket zero = NativePacket::set(0.0);
+  const bool computeNormal = normalX != nullptr && normalY != nullptr && normalZ != nullptr;
 
   size_t i = 0;
   for (; i + NativePacket::width <= numPairs; i += NativePacket::width) {
@@ -93,18 +92,17 @@ void computeSpherePairDistancesImpl(const double* worldX, const double* worldY, 
     const NativePacket dy = secondY - firstY;
     const NativePacket dz = secondZ - firstZ;
     const NativePacket centerDistance = simd::sqrt(dx * dx + dy * dy + dz * dz);
-    const NativePacket signedDistance = centerDistance - NativePacket::loadAligned(radiusSum + i);
+    const NativePacket radiusSumPacket = NativePacket::loadAligned(radiusSum + i);
+    const NativePacket signedDistance = centerDistance - radiusSumPacket;
     signedDistance.storeUnaligned(distances + i);
 
-    if (normalX != nullptr && normalY != nullptr && normalZ != nullptr) {
+    if (computeNormal) {
       const auto zeroDistanceMask = centerDistance < epsilon;
-      const NativePacket nearestPointDirectionSign = simd::select(signedDistance < zero, negativeOne, one);
       const NativePacket safeDistance = simd::max(centerDistance, epsilon);
       const NativePacket invDistance = one / safeDistance;
-      simd::select(zeroDistanceMask, nearestPointDirectionSign, nearestPointDirectionSign * dx * invDistance)
-          .storeAligned(normalX + i);
-      simd::select(zeroDistanceMask, zero, nearestPointDirectionSign * dy * invDistance).storeAligned(normalY + i);
-      simd::select(zeroDistanceMask, zero, nearestPointDirectionSign * dz * invDistance).storeAligned(normalZ + i);
+      simd::select(zeroDistanceMask, one, dx * invDistance).storeAligned(normalX + i);
+      simd::select(zeroDistanceMask, zero, dy * invDistance).storeAligned(normalY + i);
+      simd::select(zeroDistanceMask, zero, dz * invDistance).storeAligned(normalZ + i);
     }
   }
 

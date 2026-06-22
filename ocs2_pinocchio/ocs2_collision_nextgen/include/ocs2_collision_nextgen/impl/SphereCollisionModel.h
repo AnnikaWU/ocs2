@@ -57,7 +57,7 @@ struct SphereCollisionEvaluation {
   vector_t distances;
   std::vector<vector3_t> firstCenters;
   std::vector<vector3_t> secondCenters;
-  std::vector<vector3_t> normals;
+  std::vector<vector3_t> jacobianNormals;
 };
 
 class SphereCollisionModel final {
