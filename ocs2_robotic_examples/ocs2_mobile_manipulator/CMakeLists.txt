@@ -17,6 +17,7 @@ find_package(pinocchio REQUIRED)
 find_package(hpp-fcl REQUIRED)
 find_package(Eigen3 3.3 REQUIRED NO_MODULE)
 find_package(Boost REQUIRED COMPONENTS system filesystem log_setup log)
+find_package(Threads REQUIRED)
 
 # Resolve for the package path at compile time.
 configure_file(
@@ -31,6 +32,8 @@ add_library(${PROJECT_NAME}
   src/MobileManipulatorPinocchioMapping.cpp
   src/Profiling.cpp
   src/ProfilingCollections.cpp
+  src/collision_debug/SelfCollisionDebugProbe.cpp
+  src/collision_debug/SelfCollisionDebugSoftConstraint.cpp
   src/constraint/EndEffectorConstraint.cpp
   src/dynamics/WheelBasedMobileManipulatorDynamics.cpp
   src/dynamics/DefaultManipulatorDynamics.cpp
@@ -44,6 +47,7 @@ target_link_libraries(${PROJECT_NAME}
     hpp-fcl::hpp-fcl
     Boost::filesystem
     Boost::system
+    Threads::Threads
 )
 target_include_directories(${PROJECT_NAME}
   PUBLIC

@@ -54,6 +54,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "ocs2_mobile_manipulator/ManipulatorModelInfo.h"
 #include "ocs2_mobile_manipulator/MobileManipulatorPreComputation.h"
 #include "ocs2_mobile_manipulator/ProfilingCollections.h"
+#include "ocs2_mobile_manipulator/collision_debug/SelfCollisionDebugSoftConstraint.h"
 #include "ocs2_mobile_manipulator/constraint/EndEffectorConstraint.h"
 #include "ocs2_mobile_manipulator/constraint/MobileManipulatorNextgenSelfCollisionConstraint.h"
 #include "ocs2_mobile_manipulator/constraint/MobileManipulatorSelfCollisionConstraint.h"
@@ -72,21 +73,24 @@ namespace mobile_manipulator {
 
 namespace {
 
-enum class SelfCollisionBackend { PinocchioFcl, Nextgen };
+enum class SelfCollisionBackend { PinocchioFcl, Nextgen, Debug };
 
 SelfCollisionBackend loadSelfCollisionBackend(const boost::property_tree::ptree& pt, const std::string& prefix) {
   std::string backend = "pinocchio_fcl";
   loadData::loadPtreeValue(pt, backend, prefix + ".backend", true);
 
-  if (backend == "pinocchio_fcl" || backend == "self_collision" || backend == "fcl") {
+  if (backend == "pinocchio_fcl") {
     return SelfCollisionBackend::PinocchioFcl;
   }
-  if (backend == "nextgen" || backend == "collision_nextgen") {
+  if (backend == "nextgen") {
     return SelfCollisionBackend::Nextgen;
+  }
+  if (backend == "debug") {
+    return SelfCollisionBackend::Debug;
   }
 
   throw std::runtime_error("[MobileManipulatorInterface] Unknown self-collision backend '" + backend +
-                           "'. Supported values are 'pinocchio_fcl' and 'nextgen'.");
+                           "'. Supported values are 'pinocchio_fcl', 'nextgen', and 'debug'.");
 }
 
 const char* toString(SelfCollisionBackend backend) {
@@ -95,8 +99,20 @@ const char* toString(SelfCollisionBackend backend) {
       return "pinocchio_fcl";
     case SelfCollisionBackend::Nextgen:
       return "nextgen";
+    case SelfCollisionBackend::Debug:
+      return "debug";
   }
   return "unknown";
+}
+
+SelfCollisionDebugSettings loadSelfCollisionDebugSettings(const boost::property_tree::ptree& pt, const std::string& prefix) {
+  SelfCollisionDebugSettings settings;
+  loadData::loadPtreeValue(pt, settings.queueCapacity, prefix + ".debug.queueCapacity", true);
+  loadData::loadPtreeValue(pt, settings.maxProducerThreads, prefix + ".debug.maxProducerThreads", true);
+  loadData::loadPtreeValue(pt, settings.waitTimeoutUs, prefix + ".debug.waitTimeoutUs", true);
+  loadData::loadPtreeValue(pt, settings.syncOnDestruction, prefix + ".debug.syncOnDestruction", true);
+  loadData::loadPtreeValue(pt, settings.outputFile, prefix + ".debug.outputFile", true);
+  return settings;
 }
 
 std::string resolvePathRelativeToTaskFile(const std::string& path, const std::string& taskFile) {
@@ -436,6 +452,8 @@ std::unique_ptr<StateCost> MobileManipulatorInterface::getSelfCollisionConstrain
   scalar_t mu = 1e-2;
   scalar_t delta = 1e-3;
   scalar_t minimumDistance = 0.0;
+  std::string debugReferenceUrdfFile;
+  SelfCollisionDebugSettings debugSettings;
 
   boost::property_tree::ptree pt;
   boost::property_tree::read_info(taskFile, pt);
@@ -446,13 +464,18 @@ std::unique_ptr<StateCost> MobileManipulatorInterface::getSelfCollisionConstrain
   loadData::loadPtreeValue(pt, minimumDistance, prefix + ".minimumDistance", true);
   loadData::loadPtreeValue(pt, collisionUrdfFile, prefix + ".collisionUrdfFile", true);
   const SelfCollisionBackend backend = loadSelfCollisionBackend(pt, prefix);
+  if (backend == SelfCollisionBackend::Debug) {
+    loadData::loadPtreeValue(pt, debugReferenceUrdfFile, prefix + ".debug.referenceUrdfFile", true);
+    debugSettings = loadSelfCollisionDebugSettings(pt, prefix);
+  }
   loadData::loadStdVectorOfPair(taskFile, prefix + ".collisionObjectPairs", collisionObjectPairs, true);
   loadData::loadStdVectorOfPair(taskFile, prefix + ".collisionLinkPairs", collisionLinkPairs, true);
   std::cerr << " #### =============================================================================\n";
 
-  if (backend == SelfCollisionBackend::Nextgen && !usePreComputation) {
+  if ((backend == SelfCollisionBackend::Nextgen || backend == SelfCollisionBackend::Debug) && !usePreComputation) {
     throw std::invalid_argument("[MobileManipulatorInterface] " + prefix +
-                                ".backend \"nextgen\" requires model_settings.usePreComputation true.");
+                                ".backend \"" + std::string(toString(backend)) +
+                                "\" requires model_settings.usePreComputation true.");
   }
 
   if (!collisionObjectPairs.empty()) {
@@ -460,6 +483,10 @@ std::unique_ptr<StateCost> MobileManipulatorInterface::getSelfCollisionConstrain
               << " geometry-object index pairs. These indices are interpreted in the selected collision URDF GeometryModel and "
                  "may point to different objects if collisionUrdfFile changes.\n"
                  "Highly recommend using collisionLinkPairs for dedicated collision URDFs.\n";
+    if (backend == SelfCollisionBackend::Debug) {
+      std::cerr << "WARNING: SelfCollision debug reference will interpret the same raw collisionObjectPairs in the reference "
+                   "pinocchio_fcl URDF GeometryModel.\n";
+    }
   }
 
   const bool useDedicatedCollisionUrdf = !collisionUrdfFile.empty();
@@ -491,7 +518,7 @@ std::unique_ptr<StateCost> MobileManipulatorInterface::getSelfCollisionConstrain
   std::cerr << "SelfCollision: backend " << toString(backend) << '\n';
 
   std::unique_ptr<StateConstraint> constraint;
-  if (backend == SelfCollisionBackend::Nextgen) {
+  if (backend == SelfCollisionBackend::Nextgen || backend == SelfCollisionBackend::Debug) {
     constraint = std::make_unique<MobileManipulatorNextgenSelfCollisionConstraint>(MobileManipulatorPinocchioMapping(manipulatorModelInfo_),
                                                                                    collisionPinocchioInterface.getModel(),
                                                                                    geometryInterface.getGeometryModel(), minimumDistance);
@@ -504,7 +531,31 @@ std::unique_ptr<StateCost> MobileManipulatorInterface::getSelfCollisionConstrain
         "self_collision", libraryFolder, recompileLibraries, false);
   }
 
-  auto penalty = std::make_unique<RelaxedBarrierPenalty>(RelaxedBarrierPenalty::Config{mu, delta});
+  const RelaxedBarrierPenalty::Config penaltyConfig{mu, delta};
+  auto penalty = std::make_unique<RelaxedBarrierPenalty>(penaltyConfig);
+
+  if (backend == SelfCollisionBackend::Debug) {
+    std::string referenceUrdfFile = debugReferenceUrdfFile.empty()
+                                        ? urdfFile
+                                        : resolvePathRelativeToTaskFile(debugReferenceUrdfFile, taskFile);
+    boost::filesystem::path referenceUrdfPath(referenceUrdfFile);
+    if (!boost::filesystem::exists(referenceUrdfPath)) {
+      throw std::invalid_argument("[MobileManipulatorInterface] Self-collision debug reference URDF file not found: " +
+                                  referenceUrdfPath.string());
+    }
+
+    PinocchioInterface referencePinocchioInterface = createPinocchioInterface(referenceUrdfPath.string(), modelType, removeJointNames);
+    if (referenceUrdfPath.string() != urdfFile) {
+      checkCollisionModelCompatibility(pinocchioInterface, referencePinocchioInterface);
+    }
+    PinocchioGeometryInterface referenceGeometryInterface(referencePinocchioInterface, collisionLinkPairs, collisionObjectPairs);
+    checkCollisionLinkPairsHaveGeometry(referencePinocchioInterface, referenceGeometryInterface, collisionLinkPairs);
+
+    auto debugProbe = std::make_shared<SelfCollisionDebugProbe>(
+        debugSettings, referenceUrdfPath.string(), modelType, removeJointNames, collisionLinkPairs, collisionObjectPairs,
+        manipulatorModelInfo_, minimumDistance, std::make_unique<RelaxedBarrierPenalty>(penaltyConfig));
+    return std::make_unique<SelfCollisionDebugSoftConstraint>(std::move(constraint), std::move(penalty), std::move(debugProbe));
+  }
 
   return std::make_unique<StateSoftConstraint>(std::move(constraint), std::move(penalty));
 }

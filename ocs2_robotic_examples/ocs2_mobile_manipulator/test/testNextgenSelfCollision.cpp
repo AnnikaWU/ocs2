@@ -33,6 +33,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <pinocchio/algorithm/kinematics.hpp>
 
 #include <cmath>
+#include <fstream>
+#include <memory>
+#include <string>
 #include <utility>
 
 #include <gtest/gtest.h>
@@ -40,13 +43,16 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <ocs2_collision_nextgen/impl/SphereCollisionModel.h>
 #include <ocs2_core/misc/LoadData.h>
 #include <ocs2_core/misc/LoadStdVectorOfPair.h>
+#include <ocs2_core/penalties/Penalties.h>
 #include <ocs2_pinocchio_interface/urdf.h>
+#include <ocs2_robotic_assets/package_path.h>
 #include <ocs2_self_collision/PinocchioGeometryInterface.h>
 #include <ocs2_self_collision/SelfCollisionConstraint.h>
 
 #include "ocs2_mobile_manipulator/FactoryFunctions.h"
 #include "ocs2_mobile_manipulator/MobileManipulatorInterface.h"
 #include "ocs2_mobile_manipulator/MobileManipulatorPreComputation.h"
+#include "ocs2_mobile_manipulator/collision_debug/SelfCollisionDebugSoftConstraint.h"
 #include "ocs2_mobile_manipulator/constraint/MobileManipulatorNextgenSelfCollisionConstraint.h"
 #include "ocs2_mobile_manipulator/constraint/MobileManipulatorSelfCollisionConstraint.h"
 #include "ocs2_mobile_manipulator/package_path.h"
@@ -262,4 +268,78 @@ TEST(NextgenSelfCollision, LinearApproximationMatchesPinocchioFcl) {
 
   ASSERT_TRUE(nextgenLinear.f.isApprox(fclLinear.f, 1e-9));
   ASSERT_TRUE(nextgenLinear.dfdx.isApprox(fclLinear.dfdx, 1e-9));
+}
+
+TEST(NextgenSelfCollision, DebugSoftConstraintWritesReferenceComparison) {
+  const std::string taskFile = ocs2::mobile_manipulator::getPath() + "/config/franka/task.info";
+  const std::string sphereUrdf = ocs2::mobile_manipulator::getPath() + "/config/franka/panda_collision_spheres.urdf";
+  const std::string referenceUrdf = ocs2::robotic_assets::getPath() + "/resources/mobile_manipulator/franka/urdf/panda.urdf";
+  const std::string outputFile = "/tmp/ocs2_self_collision_debug_test.tsv";
+
+  const ManipulatorModelType modelType = mobile_manipulator::loadManipulatorType(taskFile, "model_information.manipulatorModelType");
+  std::vector<std::string> removeJointNames;
+  loadData::loadStdVector<std::string>(taskFile, "model_information.removeJoints", removeJointNames, false);
+
+  std::string baseFrame;
+  std::string eeFrame;
+  loadData::loadCppDataType(taskFile, "model_information.baseFrame", baseFrame);
+  loadData::loadCppDataType(taskFile, "model_information.eeFrame", eeFrame);
+
+  scalar_t minimumDistance = 0.0;
+  scalar_t mu = 0.0;
+  scalar_t delta = 0.0;
+  loadData::loadCppDataType(taskFile, "selfCollision.minimumDistance", minimumDistance);
+  loadData::loadCppDataType(taskFile, "selfCollision.mu", mu);
+  loadData::loadCppDataType(taskFile, "selfCollision.delta", delta);
+
+  std::vector<std::pair<std::string, std::string>> collisionLinkPairs;
+  loadData::loadStdVectorOfPair(taskFile, "selfCollision.collisionLinkPairs", collisionLinkPairs, true);
+
+  PinocchioInterface mainPinocchioInterface = createPinocchioInterface(referenceUrdf, modelType, removeJointNames);
+  PinocchioInterface spherePinocchioInterface = createPinocchioInterface(sphereUrdf, modelType, removeJointNames);
+  const ManipulatorModelInfo modelInfo = createManipulatorModelInfo(mainPinocchioInterface, modelType, baseFrame, eeFrame);
+  PinocchioGeometryInterface sphereGeometryInterface(spherePinocchioInterface, collisionLinkPairs);
+
+  {
+    SelfCollisionDebugSettings settings;
+    settings.queueCapacity = 8;
+    settings.maxProducerThreads = 1;
+    settings.waitTimeoutUs = 1000;
+    settings.syncOnDestruction = true;
+    settings.outputFile = outputFile;
+
+    auto probe = std::make_shared<SelfCollisionDebugProbe>(
+        settings, referenceUrdf, modelType, removeJointNames, collisionLinkPairs, std::vector<std::pair<size_t, size_t>>{},
+        modelInfo, minimumDistance, std::make_unique<RelaxedBarrierPenalty>(RelaxedBarrierPenalty::Config{mu, delta}));
+
+    auto activeConstraint = std::make_unique<MobileManipulatorNextgenSelfCollisionConstraint>(
+        MobileManipulatorPinocchioMapping(modelInfo), spherePinocchioInterface.getModel(),
+        sphereGeometryInterface.getGeometryModel(), minimumDistance);
+    SelfCollisionDebugSoftConstraint debugConstraint(
+        std::move(activeConstraint), std::make_unique<RelaxedBarrierPenalty>(RelaxedBarrierPenalty::Config{mu, delta}), probe);
+
+    MobileManipulatorPreComputation preComputation(mainPinocchioInterface, modelInfo);
+    vector_t state = vector_t::Zero(modelInfo.stateDim);
+    state << 0.0, 0.171, 0.114, -1.57, 0.05, 1.57, 0.469;
+    preComputation.request(Request::SoftConstraint + Request::Approximation, 0.0, state, vector_t::Zero(modelInfo.inputDim));
+
+    const TargetTrajectories targetTrajectories;
+    const auto approximation = debugConstraint.getQuadraticApproximation(0.0, state, targetTrajectories, preComputation);
+    EXPECT_EQ(approximation.dfdx.size(), modelInfo.stateDim);
+    EXPECT_EQ(approximation.dfdxx.rows(), modelInfo.stateDim);
+  }
+
+  std::ifstream output(outputFile);
+  ASSERT_TRUE(output.is_open());
+
+  std::string line;
+  size_t lineCount = 0;
+  bool sawOkSample = false;
+  while (std::getline(output, line)) {
+    ++lineCount;
+    sawOkSample = sawOkSample || line.rfind("ok\t", 0) == 0;
+  }
+
+  EXPECT_GE(lineCount, 2);
+  EXPECT_TRUE(sawOkSample);
 }
