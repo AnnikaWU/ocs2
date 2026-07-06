@@ -64,7 +64,7 @@ int main(int argc, char** argv) {
   std::cerr << "Loading urdf file: " << urdfFile << std::endl;
   // Robot Interface
   mobile_manipulator::MobileManipulatorInterface interface(taskFile, libFolder,
-                                                           urdfFile);
+                                                           urdfFile, false);
 
   // MRT
   MRT_ROS_Interface mrt(robotName);

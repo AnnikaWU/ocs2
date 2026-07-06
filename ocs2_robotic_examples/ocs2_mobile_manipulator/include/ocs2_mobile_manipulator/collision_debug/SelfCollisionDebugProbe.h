@@ -57,6 +57,7 @@ struct SelfCollisionDebugSettings {
   int waitTimeoutUs = 1000;
   bool syncOnDestruction = true;
   std::string outputFile = "/tmp/ocs2_self_collision_debug.tsv";
+  std::string mpcOutputFile = "/tmp/ocs2_self_collision_debug_mpc.tsv";
 };
 
 struct SelfCollisionDebugSample {
@@ -78,7 +79,8 @@ struct SelfCollisionDebugSample {
 
 class SelfCollisionDebugProbe final {
  public:
-  SelfCollisionDebugProbe(SelfCollisionDebugSettings settings, std::string referenceUrdfFile, ManipulatorModelType modelType,
+  SelfCollisionDebugProbe(SelfCollisionDebugSettings settings, std::string activeUrdfFile, std::string referenceUrdfFile,
+                          ManipulatorModelType modelType,
                           std::vector<std::string> removeJointNames,
                           std::vector<std::pair<std::string, std::string>> collisionLinkPairs,
                           std::vector<std::pair<size_t, size_t>> collisionObjectPairs, ManipulatorModelInfo modelInfo,
@@ -92,8 +94,22 @@ class SelfCollisionDebugProbe final {
                const ScalarFunctionQuadraticApproximation& activeApproximation) noexcept;
   void recordProducerError(const std::string& message) noexcept;
 
+  /** Records the actually observed state at the beginning of an MPC run. */
+  void startMpcRun(scalar_t currentTime, const vector_t& currentState) noexcept;
+
+  /**
+   * Re-evaluates the accepted MPC trajectory with both collision models.
+   *
+   * The solver total cost is the active-model PerformanceIndex::cost. Since all other terms are identical,
+   * replacing the active self-collision integral with the reference integral gives the reference total cost
+   * on exactly the same accepted trajectory.
+   */
+  void finishMpcRun(const scalar_array_t& timeTrajectory, const vector_array_t& stateTrajectory,
+                    scalar_t solverActiveTotalCost) noexcept;
+
  private:
   struct Slot;
+  struct MpcEvaluator;
 
   Slot* getOrCreateSlot(std::thread::id producerThreadId);
   void workerLoop(Slot& slot) noexcept;
@@ -106,6 +122,7 @@ class SelfCollisionDebugProbe final {
                        const std::string& message);
 
   SelfCollisionDebugSettings settings_;
+  std::string activeUrdfFile_;
   std::string referenceUrdfFile_;
   ManipulatorModelType modelType_;
   std::vector<std::string> removeJointNames_;
@@ -115,6 +132,7 @@ class SelfCollisionDebugProbe final {
   scalar_t minimumDistance_ = 0.0;
   std::unique_ptr<PenaltyBase> penaltyPrototype_;
   std::unique_ptr<PinocchioGeometryInterface> referenceGeometryInterfacePtr_;
+  std::unique_ptr<MpcEvaluator> mpcEvaluatorPtr_;
 
   std::atomic<uint64_t> nextCallId_{0};
   std::atomic<uint64_t> droppedSamples_{0};
@@ -126,6 +144,7 @@ class SelfCollisionDebugProbe final {
 
   mutable std::mutex outputMutex_;
   std::ofstream output_;
+  std::ofstream mpcOutput_;
 };
 
 }  // namespace mobile_manipulator

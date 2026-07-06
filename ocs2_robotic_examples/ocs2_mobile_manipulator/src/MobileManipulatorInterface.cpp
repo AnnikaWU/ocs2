@@ -112,6 +112,7 @@ SelfCollisionDebugSettings loadSelfCollisionDebugSettings(const boost::property_
   loadData::loadPtreeValue(pt, settings.waitTimeoutUs, prefix + ".debug.waitTimeoutUs", true);
   loadData::loadPtreeValue(pt, settings.syncOnDestruction, prefix + ".debug.syncOnDestruction", true);
   loadData::loadPtreeValue(pt, settings.outputFile, prefix + ".debug.outputFile", true);
+  loadData::loadPtreeValue(pt, settings.mpcOutputFile, prefix + ".debug.mpcOutputFile", true);
   return settings;
 }
 
@@ -204,7 +205,8 @@ void checkCollisionLinkPairsHaveGeometry(const PinocchioInterface& pinocchioInte
 /******************************************************************************************************/
 /******************************************************************************************************/
 MobileManipulatorInterface::MobileManipulatorInterface(const std::string& taskFile, const std::string& libraryFolder,
-                                                       const std::string& urdfFile) {
+                                                       const std::string& urdfFile, bool enableSelfCollisionDebugSidecar)
+    : enableSelfCollisionDebugSidecar_(enableSelfCollisionDebugSidecar) {
   // check that task file exists
   boost::filesystem::path taskFilePath(taskFile);
   if (boost::filesystem::exists(taskFilePath)) {
@@ -535,6 +537,10 @@ std::unique_ptr<StateCost> MobileManipulatorInterface::getSelfCollisionConstrain
   auto penalty = std::make_unique<RelaxedBarrierPenalty>(penaltyConfig);
 
   if (backend == SelfCollisionBackend::Debug) {
+    if (!enableSelfCollisionDebugSidecar_) {
+      return std::make_unique<StateSoftConstraint>(std::move(constraint), std::move(penalty));
+    }
+
     std::string referenceUrdfFile = debugReferenceUrdfFile.empty()
                                         ? urdfFile
                                         : resolvePathRelativeToTaskFile(debugReferenceUrdfFile, taskFile);
@@ -552,8 +558,9 @@ std::unique_ptr<StateCost> MobileManipulatorInterface::getSelfCollisionConstrain
     checkCollisionLinkPairsHaveGeometry(referencePinocchioInterface, referenceGeometryInterface, collisionLinkPairs);
 
     auto debugProbe = std::make_shared<SelfCollisionDebugProbe>(
-        debugSettings, referenceUrdfPath.string(), modelType, removeJointNames, collisionLinkPairs, collisionObjectPairs,
-        manipulatorModelInfo_, minimumDistance, std::make_unique<RelaxedBarrierPenalty>(penaltyConfig));
+        debugSettings, collisionUrdfPath.string(), referenceUrdfPath.string(), modelType, removeJointNames, collisionLinkPairs,
+        collisionObjectPairs, manipulatorModelInfo_, minimumDistance, std::make_unique<RelaxedBarrierPenalty>(penaltyConfig));
+    selfCollisionDebugProbePtr_ = debugProbe;
     return std::make_unique<SelfCollisionDebugSoftConstraint>(std::move(constraint), std::move(penalty), std::move(debugProbe));
   }
 

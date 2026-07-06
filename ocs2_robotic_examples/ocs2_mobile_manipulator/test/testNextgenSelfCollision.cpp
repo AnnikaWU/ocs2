@@ -35,7 +35,9 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <cmath>
 #include <fstream>
 #include <memory>
+#include <sstream>
 #include <string>
+#include <unordered_map>
 #include <utility>
 
 #include <gtest/gtest.h>
@@ -43,6 +45,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <ocs2_collision_nextgen/impl/SphereCollisionModel.h>
 #include <ocs2_core/misc/LoadData.h>
 #include <ocs2_core/misc/LoadStdVectorOfPair.h>
+#include <ocs2_core/penalties/MultidimensionalPenalty.h>
 #include <ocs2_core/penalties/Penalties.h>
 #include <ocs2_pinocchio_interface/urdf.h>
 #include <ocs2_robotic_assets/package_path.h>
@@ -275,6 +278,7 @@ TEST(NextgenSelfCollision, DebugSoftConstraintWritesReferenceComparison) {
   const std::string sphereUrdf = ocs2::mobile_manipulator::getPath() + "/config/franka/panda_collision_spheres.urdf";
   const std::string referenceUrdf = ocs2::robotic_assets::getPath() + "/resources/mobile_manipulator/franka/urdf/panda.urdf";
   const std::string outputFile = "/tmp/ocs2_self_collision_debug_test.tsv";
+  const std::string mpcOutputFile = "/tmp/ocs2_self_collision_debug_mpc_test.tsv";
 
   const ManipulatorModelType modelType = mobile_manipulator::loadManipulatorType(taskFile, "model_information.manipulatorModelType");
   std::vector<std::string> removeJointNames;
@@ -299,6 +303,8 @@ TEST(NextgenSelfCollision, DebugSoftConstraintWritesReferenceComparison) {
   PinocchioInterface spherePinocchioInterface = createPinocchioInterface(sphereUrdf, modelType, removeJointNames);
   const ManipulatorModelInfo modelInfo = createManipulatorModelInfo(mainPinocchioInterface, modelType, baseFrame, eeFrame);
   PinocchioGeometryInterface sphereGeometryInterface(spherePinocchioInterface, collisionLinkPairs);
+  scalar_t expectedActiveCost = 0.0;
+  scalar_t expectedReferenceCost = 0.0;
 
   {
     SelfCollisionDebugSettings settings;
@@ -307,10 +313,12 @@ TEST(NextgenSelfCollision, DebugSoftConstraintWritesReferenceComparison) {
     settings.waitTimeoutUs = 1000;
     settings.syncOnDestruction = true;
     settings.outputFile = outputFile;
+    settings.mpcOutputFile = mpcOutputFile;
 
     auto probe = std::make_shared<SelfCollisionDebugProbe>(
-        settings, referenceUrdf, modelType, removeJointNames, collisionLinkPairs, std::vector<std::pair<size_t, size_t>>{},
-        modelInfo, minimumDistance, std::make_unique<RelaxedBarrierPenalty>(RelaxedBarrierPenalty::Config{mu, delta}));
+        settings, sphereUrdf, referenceUrdf, modelType, removeJointNames, collisionLinkPairs,
+        std::vector<std::pair<size_t, size_t>>{}, modelInfo, minimumDistance,
+        std::make_unique<RelaxedBarrierPenalty>(RelaxedBarrierPenalty::Config{mu, delta}));
 
     auto activeConstraint = std::make_unique<MobileManipulatorNextgenSelfCollisionConstraint>(
         MobileManipulatorPinocchioMapping(modelInfo), spherePinocchioInterface.getModel(),
@@ -327,19 +335,79 @@ TEST(NextgenSelfCollision, DebugSoftConstraintWritesReferenceComparison) {
     const auto approximation = debugConstraint.getQuadraticApproximation(0.0, state, targetTrajectories, preComputation);
     EXPECT_EQ(approximation.dfdx.size(), modelInfo.stateDim);
     EXPECT_EQ(approximation.dfdxx.rows(), modelInfo.stateDim);
+    expectedActiveCost = debugConstraint.getValue(0.0, state, targetTrajectories, preComputation);
+
+    MobileManipulatorSelfCollisionConstraint referenceConstraint(
+        MobileManipulatorPinocchioMapping(modelInfo), PinocchioGeometryInterface(mainPinocchioInterface, collisionLinkPairs),
+        minimumDistance);
+    std::unique_ptr<PenaltyBase> referencePenaltyFunction =
+        std::make_unique<RelaxedBarrierPenalty>(RelaxedBarrierPenalty::Config{mu, delta});
+    MultidimensionalPenalty referencePenalty(std::move(referencePenaltyFunction));
+    expectedReferenceCost = referencePenalty.getValue(0.0, referenceConstraint.getValue(0.0, state, preComputation));
+
+    probe->startMpcRun(0.0, state);
+    probe->finishMpcRun(scalar_array_t{0.0, 1.0}, vector_array_t{state, state}, expectedActiveCost + 5.0);
   }
 
   std::ifstream output(outputFile);
   ASSERT_TRUE(output.is_open());
 
   std::string line;
+  std::string comparisonHeader;
+  std::string comparisonValues;
   size_t lineCount = 0;
   bool sawOkSample = false;
   while (std::getline(output, line)) {
     ++lineCount;
-    sawOkSample = sawOkSample || line.rfind("ok\t", 0) == 0;
+    if (lineCount == 1) {
+      comparisonHeader = line;
+    } else if (comparisonValues.empty() && line.rfind("ok\t", 0) == 0) {
+      comparisonValues = line;
+      sawOkSample = true;
+    }
   }
 
   EXPECT_GE(lineCount, 2);
   EXPECT_TRUE(sawOkSample);
+
+  std::ifstream mpcOutput(mpcOutputFile);
+  ASSERT_TRUE(mpcOutput.is_open());
+  std::string header;
+  std::string values;
+  ASSERT_TRUE(static_cast<bool>(std::getline(mpcOutput, header)));
+  ASSERT_TRUE(static_cast<bool>(std::getline(mpcOutput, values)));
+
+  auto splitTsv = [](const std::string& line) {
+    std::vector<std::string> fields;
+    std::stringstream stream(line);
+    std::string field;
+    while (std::getline(stream, field, '\t')) {
+      fields.push_back(field);
+    }
+    return fields;
+  };
+
+  const auto comparisonHeaderFields = splitTsv(comparisonHeader);
+  const auto comparisonValueFields = splitTsv(comparisonValues);
+  ASSERT_EQ(comparisonHeaderFields.size(), comparisonValueFields.size());
+  std::unordered_map<std::string, std::string> comparisonRow;
+  for (size_t i = 0; i < comparisonHeaderFields.size(); ++i) {
+    comparisonRow.emplace(comparisonHeaderFields[i], comparisonValueFields[i]);
+  }
+  EXPECT_NEAR(std::stod(comparisonRow.at("active_cost")), expectedActiveCost, 1e-12);
+  EXPECT_NEAR(std::stod(comparisonRow.at("reference_cost")), expectedReferenceCost, 1e-12);
+
+  const auto headerFields = splitTsv(header);
+  const auto valueFields = splitTsv(values);
+  ASSERT_EQ(headerFields.size(), valueFields.size());
+  std::unordered_map<std::string, std::string> row;
+  for (size_t i = 0; i < headerFields.size(); ++i) {
+    row.emplace(headerFields[i], valueFields[i]);
+  }
+
+  EXPECT_EQ(row.at("status"), "ok");
+  EXPECT_NEAR(std::stod(row.at("active_self_collision_horizon_cost")), expectedActiveCost, 1e-12);
+  EXPECT_NEAR(std::stod(row.at("reference_self_collision_horizon_cost")), expectedReferenceCost, 1e-12);
+  EXPECT_NEAR(std::stod(row.at("solver_active_total_cost")), expectedActiveCost + 5.0, 1e-12);
+  EXPECT_NEAR(std::stod(row.at("inferred_reference_total_cost")), expectedReferenceCost + 5.0, 1e-12);
 }

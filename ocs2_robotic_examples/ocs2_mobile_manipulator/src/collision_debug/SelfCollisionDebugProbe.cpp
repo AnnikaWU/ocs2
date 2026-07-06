@@ -36,6 +36,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <iomanip>
 #include <iostream>
 #include <limits>
+#include <numeric>
 #include <sstream>
 #include <stdexcept>
 #include <utility>
@@ -45,9 +46,13 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <ocs2_mobile_manipulator/FactoryFunctions.h>
 #include <ocs2_mobile_manipulator/MobileManipulatorPinocchioMapping.h>
 #include <ocs2_mobile_manipulator/MobileManipulatorPreComputation.h>
+#include <ocs2_mobile_manipulator/constraint/MobileManipulatorNextgenSelfCollisionConstraint.h>
 #include <ocs2_mobile_manipulator/constraint/MobileManipulatorSelfCollisionConstraint.h>
 #include <ocs2_mobile_manipulator/third_party/moodycamel/readerwriterqueue.h>
 #include <ocs2_self_collision/PinocchioGeometryInterface.h>
+
+#include <pinocchio/multibody/geometry.hpp>
+#include <pinocchio/multibody/model.hpp>
 
 namespace ocs2 {
 namespace mobile_manipulator {
@@ -79,6 +84,75 @@ std::string sanitizeForTsv(std::string text) {
   return text;
 }
 
+scalar_t constraintViolationSse(const vector_t& constraints) {
+  scalar_t result = 0.0;
+  for (Eigen::Index i = 0; i < constraints.size(); ++i) {
+    if (constraints[i] < 0.0) {
+      result += constraints[i] * constraints[i];
+    }
+  }
+  return result;
+}
+
+scalar_t integrateTrapezoidal(const scalar_array_t& time, const scalar_array_t& values) {
+  if (time.size() != values.size()) {
+    throw std::invalid_argument("[SelfCollisionDebugProbe] trajectory time/value size mismatch.");
+  }
+
+  scalar_t integral = 0.0;
+  for (size_t i = 1; i < time.size(); ++i) {
+    const scalar_t dt = time[i] - time[i - 1];
+    if (dt < 0.0) {
+      throw std::invalid_argument("[SelfCollisionDebugProbe] MPC trajectory time must be nondecreasing.");
+    }
+    integral += 0.5 * dt * (values[i - 1] + values[i]);
+  }
+  return integral;
+}
+
+std::vector<size_t> linkPairWidths(const PinocchioInterface& pinocchioInterface,
+                                   const PinocchioGeometryInterface& geometryInterface,
+                                   const std::vector<std::pair<std::string, std::string>>& collisionLinkPairs) {
+  const auto& model = pinocchioInterface.getModel();
+  const auto& geometryModel = geometryInterface.getGeometryModel();
+
+  auto countObjects = [&](const std::string& frameName) {
+    size_t count = 0;
+    for (const auto& object : geometryModel.geometryObjects) {
+      if (model.frames[object.parentFrame].name == frameName) {
+        ++count;
+      }
+    }
+    return count;
+  };
+
+  std::vector<size_t> widths;
+  widths.reserve(collisionLinkPairs.size());
+  for (const auto& linkPair : collisionLinkPairs) {
+    widths.push_back(countObjects(linkPair.first) * countObjects(linkPair.second));
+  }
+  return widths;
+}
+
+std::vector<scalar_t> linkPairMinimums(const vector_t& constraints, const std::vector<size_t>& widths) {
+  const size_t expectedSize = std::accumulate(widths.begin(), widths.end(), size_t{0});
+  if (expectedSize != static_cast<size_t>(constraints.size())) {
+    throw std::runtime_error("[SelfCollisionDebugProbe] link-pair grouping does not match the constraint vector.");
+  }
+
+  std::vector<scalar_t> minimums;
+  minimums.reserve(widths.size());
+  Eigen::Index offset = 0;
+  for (const size_t width : widths) {
+    if (width == 0) {
+      throw std::runtime_error("[SelfCollisionDebugProbe] link pair has no collision-object combinations.");
+    }
+    minimums.push_back(constraints.segment(offset, static_cast<Eigen::Index>(width)).minCoeff());
+    offset += static_cast<Eigen::Index>(width);
+  }
+  return minimums;
+}
+
 }  // namespace
 
 struct SelfCollisionDebugProbe::Slot {
@@ -94,13 +168,105 @@ struct SelfCollisionDebugProbe::Slot {
   std::atomic<uint64_t> droppedSamples{0};
 };
 
-SelfCollisionDebugProbe::SelfCollisionDebugProbe(SelfCollisionDebugSettings settings, std::string referenceUrdfFile,
+struct SelfCollisionDebugProbe::MpcEvaluator {
+  struct StateMetrics {
+    scalar_t activeCost = 0.0;
+    scalar_t referenceCost = 0.0;
+    scalar_t activeViolationSse = 0.0;
+    scalar_t referenceViolationSse = 0.0;
+    scalar_t activeMinConstraint = std::numeric_limits<scalar_t>::quiet_NaN();
+    scalar_t referenceMinConstraint = std::numeric_limits<scalar_t>::quiet_NaN();
+    scalar_t maxLinkPairMinAbsDiff = std::numeric_limits<scalar_t>::quiet_NaN();
+  };
+
+  MpcEvaluator(const std::string& activeUrdfFile, const std::string& referenceUrdfFile, ManipulatorModelType modelType,
+               const std::vector<std::string>& removeJointNames,
+               const std::vector<std::pair<std::string, std::string>>& collisionLinkPairs,
+               const std::vector<std::pair<size_t, size_t>>& collisionObjectPairs, const ManipulatorModelInfo& modelInfo,
+               scalar_t minimumDistance, const PenaltyBase& penaltyPrototype) {
+    PinocchioInterface activePinocchioInterface = createPinocchioInterface(activeUrdfFile, modelType, removeJointNames);
+    PinocchioGeometryInterface activeGeometryInterface(activePinocchioInterface, collisionLinkPairs, collisionObjectPairs);
+    activeLinkPairWidths = linkPairWidths(activePinocchioInterface, activeGeometryInterface, collisionLinkPairs);
+    activeConstraint = std::make_unique<MobileManipulatorNextgenSelfCollisionConstraint>(
+        MobileManipulatorPinocchioMapping(modelInfo), activePinocchioInterface.getModel(),
+        activeGeometryInterface.getGeometryModel(), minimumDistance);
+
+    PinocchioInterface referencePinocchioInterface = createPinocchioInterface(referenceUrdfFile, modelType, removeJointNames);
+    PinocchioGeometryInterface referenceGeometryInterface(referencePinocchioInterface, collisionLinkPairs, collisionObjectPairs);
+    referenceLinkPairWidths = linkPairWidths(referencePinocchioInterface, referenceGeometryInterface, collisionLinkPairs);
+    referenceConstraint = std::make_unique<MobileManipulatorSelfCollisionConstraint>(
+        MobileManipulatorPinocchioMapping(modelInfo), std::move(referenceGeometryInterface), minimumDistance);
+
+    preComputation = std::make_unique<MobileManipulatorPreComputation>(std::move(referencePinocchioInterface), modelInfo);
+    activePenalty = std::make_unique<MultidimensionalPenalty>(std::unique_ptr<PenaltyBase>(penaltyPrototype.clone()));
+    referencePenalty = std::make_unique<MultidimensionalPenalty>(std::unique_ptr<PenaltyBase>(penaltyPrototype.clone()));
+    canCompareLogicalLinkPairs = collisionObjectPairs.empty();
+    zeroInput = vector_t::Zero(modelInfo.inputDim);
+  }
+
+  StateMetrics evaluate(scalar_t time, const vector_t& state) {
+    preComputation->request(Request::SoftConstraint, time, state, zeroInput);
+    const vector_t activeValues = activeConstraint->getValue(time, state, *preComputation);
+    const vector_t referenceValues = referenceConstraint->getValue(time, state, *preComputation);
+
+    StateMetrics result;
+    result.activeCost = activePenalty->getValue(time, activeValues);
+    result.referenceCost = referencePenalty->getValue(time, referenceValues);
+    result.activeViolationSse = constraintViolationSse(activeValues);
+    result.referenceViolationSse = constraintViolationSse(referenceValues);
+    if (activeValues.size() > 0) {
+      result.activeMinConstraint = activeValues.minCoeff();
+    }
+    if (referenceValues.size() > 0) {
+      result.referenceMinConstraint = referenceValues.minCoeff();
+    }
+
+    if (canCompareLogicalLinkPairs) {
+      const auto activeMinimums = linkPairMinimums(activeValues, activeLinkPairWidths);
+      const auto referenceMinimums = linkPairMinimums(referenceValues, referenceLinkPairWidths);
+      if (activeMinimums.size() != referenceMinimums.size()) {
+        throw std::runtime_error("[SelfCollisionDebugProbe] active/reference logical link-pair count mismatch.");
+      }
+      scalar_t maxDifference = 0.0;
+      for (size_t i = 0; i < activeMinimums.size(); ++i) {
+        maxDifference = std::max(maxDifference, std::abs(activeMinimums[i] - referenceMinimums[i]));
+      }
+      result.maxLinkPairMinAbsDiff = maxDifference;
+    }
+    return result;
+  }
+
+  std::unique_ptr<MobileManipulatorPreComputation> preComputation;
+  std::unique_ptr<MobileManipulatorNextgenSelfCollisionConstraint> activeConstraint;
+  std::unique_ptr<MobileManipulatorSelfCollisionConstraint> referenceConstraint;
+  std::unique_ptr<MultidimensionalPenalty> activePenalty;
+  std::unique_ptr<MultidimensionalPenalty> referencePenalty;
+  vector_t zeroInput;
+  std::vector<size_t> activeLinkPairWidths;
+  std::vector<size_t> referenceLinkPairWidths;
+  bool canCompareLogicalLinkPairs = false;
+
+  size_t runIndex = 0;
+  bool hasObservation = false;
+  scalar_t observationTime = 0.0;
+  StateMetrics observationMetrics;
+  scalar_t realizedActiveCost = 0.0;
+  scalar_t realizedReferenceCost = 0.0;
+  scalar_t realizedActiveViolationSse = 0.0;
+  scalar_t realizedReferenceViolationSse = 0.0;
+  scalar_t cumulativePredictedSignedCostDiff = 0.0;
+  scalar_t cumulativePredictedAbsCostDiff = 0.0;
+};
+
+SelfCollisionDebugProbe::SelfCollisionDebugProbe(SelfCollisionDebugSettings settings, std::string activeUrdfFile,
+                                                 std::string referenceUrdfFile,
                                                  ManipulatorModelType modelType, std::vector<std::string> removeJointNames,
                                                  std::vector<std::pair<std::string, std::string>> collisionLinkPairs,
                                                  std::vector<std::pair<size_t, size_t>> collisionObjectPairs,
                                                  ManipulatorModelInfo modelInfo, scalar_t minimumDistance,
                                                  std::unique_ptr<PenaltyBase> penaltyPrototype)
     : settings_(std::move(settings)),
+      activeUrdfFile_(std::move(activeUrdfFile)),
       referenceUrdfFile_(std::move(referenceUrdfFile)),
       modelType_(modelType),
       removeJointNames_(std::move(removeJointNames)),
@@ -125,6 +291,9 @@ SelfCollisionDebugProbe::SelfCollisionDebugProbe(SelfCollisionDebugSettings sett
   PinocchioInterface referencePinocchioInterface = createPinocchioInterface(referenceUrdfFile_, modelType_, removeJointNames_);
   referenceGeometryInterfacePtr_ = std::make_unique<PinocchioGeometryInterface>(referencePinocchioInterface, collisionLinkPairs_,
                                                                                collisionObjectPairs_);
+  mpcEvaluatorPtr_ =
+      std::make_unique<MpcEvaluator>(activeUrdfFile_, referenceUrdfFile_, modelType_, removeJointNames_, collisionLinkPairs_,
+                                     collisionObjectPairs_, modelInfo_, minimumDistance_, *penaltyPrototype_);
 
   if (!settings_.outputFile.empty()) {
     output_.open(settings_.outputFile, std::ios::out | std::ios::trunc);
@@ -133,10 +302,28 @@ SelfCollisionDebugProbe::SelfCollisionDebugProbe(SelfCollisionDebugSettings sett
     }
     writeHeader();
   }
+  if (!settings_.mpcOutputFile.empty()) {
+    mpcOutput_.open(settings_.mpcOutputFile, std::ios::out | std::ios::trunc);
+    if (!mpcOutput_.is_open()) {
+      throw std::runtime_error("[SelfCollisionDebugProbe] Failed to open MPC debug output file: " + settings_.mpcOutputFile);
+    }
+    mpcOutput_
+        << "status\tmessage\tmpc_run\tobservation_time\ttrajectory_nodes\tsolver_active_total_cost\t"
+           "inferred_reference_total_cost\ttotal_cost_signed_diff\ttotal_cost_abs_diff\tactive_self_collision_horizon_cost\t"
+           "reference_self_collision_horizon_cost\tself_collision_horizon_signed_diff\tself_collision_horizon_abs_diff\t"
+           "active_constraint_violation_sse\treference_constraint_violation_sse\tactive_min_constraint\t"
+           "reference_min_constraint\tmax_link_pair_min_abs_diff\tobservation_active_cost\tobservation_reference_cost\t"
+           "realized_active_cumulative_cost\trealized_reference_cumulative_cost\trealized_cumulative_signed_diff\t"
+           "realized_active_violation_sse\trealized_reference_violation_sse\tcumulative_overlapping_horizon_signed_diff\t"
+           "cumulative_overlapping_horizon_abs_diff\n";
+  }
 
+  std::cerr << "[SelfCollisionDebugProbe] active backend nextgen uses URDF: " << activeUrdfFile_ << '\n';
   std::cerr << "[SelfCollisionDebugProbe] reference backend pinocchio_fcl uses URDF: " << referenceUrdfFile_ << '\n';
   std::cerr << "[SelfCollisionDebugProbe] output file: "
             << (settings_.outputFile.empty() ? std::string("<disabled>") : settings_.outputFile) << '\n';
+  std::cerr << "[SelfCollisionDebugProbe] MPC output file: "
+            << (settings_.mpcOutputFile.empty() ? std::string("<disabled>") : settings_.mpcOutputFile) << '\n';
 }
 
 SelfCollisionDebugProbe::~SelfCollisionDebugProbe() {
@@ -188,6 +375,129 @@ void SelfCollisionDebugProbe::enqueue(scalar_t time, const vector_t& state, cons
     recordProducerError(e.what());
   } catch (...) {
     recordProducerError("unknown producer-side exception");
+  }
+}
+
+void SelfCollisionDebugProbe::startMpcRun(scalar_t currentTime, const vector_t& currentState) noexcept {
+  if (mpcEvaluatorPtr_ == nullptr) {
+    return;
+  }
+
+  try {
+    auto& evaluator = *mpcEvaluatorPtr_;
+    const auto currentMetrics = evaluator.evaluate(currentTime, currentState);
+
+    if (evaluator.hasObservation) {
+      const scalar_t dt = currentTime - evaluator.observationTime;
+      if (dt < 0.0) {
+        evaluator.realizedActiveCost = 0.0;
+        evaluator.realizedReferenceCost = 0.0;
+        evaluator.realizedActiveViolationSse = 0.0;
+        evaluator.realizedReferenceViolationSse = 0.0;
+      } else {
+        evaluator.realizedActiveCost +=
+            0.5 * dt * (evaluator.observationMetrics.activeCost + currentMetrics.activeCost);
+        evaluator.realizedReferenceCost +=
+            0.5 * dt * (evaluator.observationMetrics.referenceCost + currentMetrics.referenceCost);
+        evaluator.realizedActiveViolationSse +=
+            0.5 * dt * (evaluator.observationMetrics.activeViolationSse + currentMetrics.activeViolationSse);
+        evaluator.realizedReferenceViolationSse +=
+            0.5 * dt * (evaluator.observationMetrics.referenceViolationSse + currentMetrics.referenceViolationSse);
+      }
+    }
+
+    evaluator.hasObservation = true;
+    evaluator.observationTime = currentTime;
+    evaluator.observationMetrics = currentMetrics;
+    ++evaluator.runIndex;
+  } catch (const std::exception& e) {
+    recordProducerError(std::string("MPC observation evaluation failed: ") + e.what());
+  } catch (...) {
+    recordProducerError("MPC observation evaluation failed: unknown exception");
+  }
+}
+
+void SelfCollisionDebugProbe::finishMpcRun(const scalar_array_t& timeTrajectory, const vector_array_t& stateTrajectory,
+                                           scalar_t solverActiveTotalCost) noexcept {
+  if (mpcEvaluatorPtr_ == nullptr || settings_.mpcOutputFile.empty()) {
+    return;
+  }
+
+  try {
+    if (timeTrajectory.size() != stateTrajectory.size() || timeTrajectory.empty()) {
+      throw std::invalid_argument("[SelfCollisionDebugProbe] MPC time/state trajectory is empty or has mismatched sizes.");
+    }
+
+    auto& evaluator = *mpcEvaluatorPtr_;
+    scalar_array_t activeCosts;
+    scalar_array_t referenceCosts;
+    scalar_array_t activeViolationSse;
+    scalar_array_t referenceViolationSse;
+    activeCosts.reserve(timeTrajectory.size());
+    referenceCosts.reserve(timeTrajectory.size());
+    activeViolationSse.reserve(timeTrajectory.size());
+    referenceViolationSse.reserve(timeTrajectory.size());
+
+    scalar_t activeMinConstraint = std::numeric_limits<scalar_t>::infinity();
+    scalar_t referenceMinConstraint = std::numeric_limits<scalar_t>::infinity();
+    scalar_t maxLinkPairMinAbsDiff = 0.0;
+    bool hasLinkPairComparison = false;
+
+    for (size_t i = 0; i < timeTrajectory.size(); ++i) {
+      const auto metrics = evaluator.evaluate(timeTrajectory[i], stateTrajectory[i]);
+      activeCosts.push_back(metrics.activeCost);
+      referenceCosts.push_back(metrics.referenceCost);
+      activeViolationSse.push_back(metrics.activeViolationSse);
+      referenceViolationSse.push_back(metrics.referenceViolationSse);
+      activeMinConstraint = std::min(activeMinConstraint, metrics.activeMinConstraint);
+      referenceMinConstraint = std::min(referenceMinConstraint, metrics.referenceMinConstraint);
+      if (std::isfinite(metrics.maxLinkPairMinAbsDiff)) {
+        hasLinkPairComparison = true;
+        maxLinkPairMinAbsDiff = std::max(maxLinkPairMinAbsDiff, metrics.maxLinkPairMinAbsDiff);
+      }
+    }
+
+    const scalar_t activeSelfCollisionCost = integrateTrapezoidal(timeTrajectory, activeCosts);
+    const scalar_t referenceSelfCollisionCost = integrateTrapezoidal(timeTrajectory, referenceCosts);
+    const scalar_t activeConstraintViolationSse = integrateTrapezoidal(timeTrajectory, activeViolationSse);
+    const scalar_t referenceConstraintViolationSse = integrateTrapezoidal(timeTrajectory, referenceViolationSse);
+    const scalar_t signedDifference = activeSelfCollisionCost - referenceSelfCollisionCost;
+    const scalar_t inferredReferenceTotalCost = solverActiveTotalCost - signedDifference;
+    evaluator.cumulativePredictedSignedCostDiff += signedDifference;
+    evaluator.cumulativePredictedAbsCostDiff += std::abs(signedDifference);
+
+    const scalar_t nan = std::numeric_limits<scalar_t>::quiet_NaN();
+    const scalar_t observationActiveCost = evaluator.hasObservation ? evaluator.observationMetrics.activeCost : nan;
+    const scalar_t observationReferenceCost = evaluator.hasObservation ? evaluator.observationMetrics.referenceCost : nan;
+    const scalar_t realizedSignedDifference = evaluator.realizedActiveCost - evaluator.realizedReferenceCost;
+
+    std::lock_guard<std::mutex> lock(outputMutex_);
+    if (mpcOutput_.is_open()) {
+      mpcOutput_ << "ok\t\t" << evaluator.runIndex << '\t' << std::setprecision(17)
+                 << (evaluator.hasObservation ? evaluator.observationTime : nan) << '\t' << timeTrajectory.size() << '\t'
+                 << solverActiveTotalCost << '\t' << inferredReferenceTotalCost << '\t' << signedDifference << '\t'
+                 << std::abs(signedDifference) << '\t' << activeSelfCollisionCost << '\t' << referenceSelfCollisionCost << '\t'
+                 << signedDifference << '\t' << std::abs(signedDifference) << '\t' << activeConstraintViolationSse << '\t'
+                 << referenceConstraintViolationSse << '\t' << activeMinConstraint << '\t' << referenceMinConstraint << '\t'
+                 << (hasLinkPairComparison ? maxLinkPairMinAbsDiff : nan) << '\t' << observationActiveCost << '\t'
+                 << observationReferenceCost << '\t' << evaluator.realizedActiveCost << '\t'
+                 << evaluator.realizedReferenceCost << '\t' << realizedSignedDifference << '\t'
+                 << evaluator.realizedActiveViolationSse << '\t' << evaluator.realizedReferenceViolationSse << '\t'
+                 << evaluator.cumulativePredictedSignedCostDiff << '\t' << evaluator.cumulativePredictedAbsCostDiff << '\n';
+      mpcOutput_.flush();
+    }
+  } catch (const std::exception& e) {
+    std::lock_guard<std::mutex> lock(outputMutex_);
+    if (mpcOutput_.is_open()) {
+      mpcOutput_ << "mpc_error\t" << sanitizeForTsv(e.what()) << '\t' << mpcEvaluatorPtr_->runIndex << '\n';
+      mpcOutput_.flush();
+    }
+  } catch (...) {
+    std::lock_guard<std::mutex> lock(outputMutex_);
+    if (mpcOutput_.is_open()) {
+      mpcOutput_ << "mpc_error\tunknown MPC trajectory evaluation exception\t" << mpcEvaluatorPtr_->runIndex << '\n';
+      mpcOutput_.flush();
+    }
   }
 }
 

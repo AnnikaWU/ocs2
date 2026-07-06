@@ -44,6 +44,8 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 namespace ocs2 {
 namespace mobile_manipulator {
 
+class SelfCollisionDebugProbe;
+
 /**
  * Mobile Manipulator Robot Interface class
  */
@@ -59,7 +61,8 @@ class MobileManipulatorInterface final : public RobotInterface {
    * @param [in] libraryFolder: The absolute path to the directory to generate CppAD library into.
    * @param [in] urdfFile: The absolute path to the URDF file for the robot.
    */
-  MobileManipulatorInterface(const std::string& taskFile, const std::string& libraryFolder, const std::string& urdfFile);
+  MobileManipulatorInterface(const std::string& taskFile, const std::string& libraryFolder, const std::string& urdfFile,
+                             bool enableSelfCollisionDebugSidecar = true);
 
   const vector_t& getInitialState() { return initialState_; }
 
@@ -81,6 +84,8 @@ class MobileManipulatorInterface final : public RobotInterface {
 
   const ManipulatorModelInfo& getManipulatorModelInfo() const { return manipulatorModelInfo_; }
 
+  std::shared_ptr<SelfCollisionDebugProbe> getSelfCollisionDebugProbe() const { return selfCollisionDebugProbePtr_; }
+
  private:
   std::unique_ptr<StateInputCost> getQuadraticInputCost(const std::string& taskFile);
   std::unique_ptr<StateCost> getEndEffectorConstraint(const PinocchioInterface& pinocchioInterface, const std::string& taskFile,
@@ -95,6 +100,7 @@ class MobileManipulatorInterface final : public RobotInterface {
   ddp::Settings ddpSettings_;
   mpc::Settings mpcSettings_;
   bool profileCostConstraintTiming_ = false;
+  bool enableSelfCollisionDebugSidecar_ = true;
 
   OptimalControlProblem problem_;
   std::shared_ptr<ReferenceManager> referenceManagerPtr_;
@@ -104,6 +110,7 @@ class MobileManipulatorInterface final : public RobotInterface {
 
   std::unique_ptr<PinocchioInterface> pinocchioInterfacePtr_;
   ManipulatorModelInfo manipulatorModelInfo_;
+  std::shared_ptr<SelfCollisionDebugProbe> selfCollisionDebugProbePtr_;
 
   vector_t initialState_;
 };

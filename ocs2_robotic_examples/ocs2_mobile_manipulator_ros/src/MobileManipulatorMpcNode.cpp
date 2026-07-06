@@ -30,6 +30,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <ocs2_ddp/GaussNewtonDDP_MPC.h>
 #include <ocs2_mobile_manipulator/MobileManipulatorInterface.h>
 #include <ocs2_mobile_manipulator/Profiling.h>
+#include <ocs2_mobile_manipulator/collision_debug/SelfCollisionDebugProbe.h>
 #include <ocs2_ros_interfaces/mpc/MPC_ROS_Interface.h>
 #include <ocs2_ros_interfaces/synchronized_module/RosReferenceManager.h>
 
@@ -78,9 +79,23 @@ int main(int argc, char** argv) {
       interface.getOptimalControlProblem(), interface.getInitializer());
   mpc.getSolverPtr()->setReferenceManager(rosReferenceManagerPtr);
   profiling::MpcRunProfiler mpcRunProfiler(interface.profileCostConstraintTiming());
+  const auto selfCollisionDebugProbe = interface.getSelfCollisionDebugProbe();
   mpc.setRunCallbacks(
-      [&mpcRunProfiler](scalar_t currentTime, const vector_t&) { mpcRunProfiler.start(currentTime); },
-      [&mpcRunProfiler](bool controllerIsUpdated) { mpcRunProfiler.finish(controllerIsUpdated); });
+      [&mpcRunProfiler, selfCollisionDebugProbe](scalar_t currentTime, const vector_t& currentState) {
+        mpcRunProfiler.start(currentTime);
+        if (selfCollisionDebugProbe != nullptr) {
+          selfCollisionDebugProbe->startMpcRun(currentTime, currentState);
+        }
+      },
+      [&mpcRunProfiler, selfCollisionDebugProbe, &mpc](bool controllerIsUpdated) {
+        mpcRunProfiler.finish(controllerIsUpdated);
+        if (controllerIsUpdated && selfCollisionDebugProbe != nullptr) {
+          const auto* solver = mpc.getSolverPtr();
+          const auto primalSolution = solver->primalSolution(solver->getFinalTime());
+          selfCollisionDebugProbe->finishMpcRun(primalSolution.timeTrajectory_, primalSolution.stateTrajectory_,
+                                                solver->getPerformanceIndeces().cost);
+        }
+      });
 
   // Launch MPC ROS node
   MPC_ROS_Interface mpcNode(mpc, robotName);
