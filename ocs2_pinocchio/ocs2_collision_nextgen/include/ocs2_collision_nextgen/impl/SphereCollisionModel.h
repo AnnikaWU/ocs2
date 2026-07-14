@@ -54,10 +54,31 @@ template <typename T>
 using AlignedVector = std::vector<T, simd::AlignedAllocator<T>>;
 
 struct SphereCollisionEvaluation {
+  explicit SphereCollisionEvaluation(size_t numPairs = 0) { resize(numPairs); }
+
+  void resize(size_t numPairs) {
+    distances.resize(numPairs);
+    firstAngularX.resize(numPairs);
+    firstAngularY.resize(numPairs);
+    firstAngularZ.resize(numPairs);
+    secondAngularX.resize(numPairs);
+    secondAngularY.resize(numPairs);
+    secondAngularZ.resize(numPairs);
+    normalX.resize(numPairs);
+    normalY.resize(numPairs);
+    normalZ.resize(numPairs);
+  }
+
   vector_t distances;
-  std::vector<vector3_t> firstCenters;
-  std::vector<vector3_t> secondCenters;
-  std::vector<vector3_t> jacobianNormals;
+  AlignedVector<double> firstAngularX;
+  AlignedVector<double> firstAngularY;
+  AlignedVector<double> firstAngularZ;
+  AlignedVector<double> secondAngularX;
+  AlignedVector<double> secondAngularY;
+  AlignedVector<double> secondAngularZ;
+  AlignedVector<double> normalX;
+  AlignedVector<double> normalY;
+  AlignedVector<double> normalZ;
 };
 
 class SphereCollisionModel final {
@@ -70,6 +91,7 @@ class SphereCollisionModel final {
 
   vector_t getDistances(const PinocchioInterface& pinocchioInterface) const;
   SphereCollisionEvaluation evaluate(const PinocchioInterface& pinocchioInterface) const;
+  void evaluate(const PinocchioInterface& pinocchioInterface, SphereCollisionEvaluation& evaluation) const;
 
   size_t getFirstParentJoint(size_t pairIndex) const;
   size_t getSecondParentJoint(size_t pairIndex) const;
@@ -81,7 +103,7 @@ class SphereCollisionModel final {
     AlignedVector<double> z;
   };
 
-  WorldCenterScratch computeWorldCenters(const PinocchioInterface& pinocchioInterface) const;
+  const WorldCenterScratch& computeWorldCenters(const PinocchioInterface& pinocchioInterface) const;
   void computeDistances(const WorldCenterScratch& worldCenters, double* distances, double* normalX, double* normalY,
                         double* normalZ) const;
 
@@ -94,6 +116,7 @@ class SphereCollisionModel final {
   AlignedVector<std::int64_t> firstObject_;
   AlignedVector<std::int64_t> secondObject_;
   AlignedVector<double> pairRadiusSum_;
+  mutable WorldCenterScratch worldCenterScratch_;
 };
 
 }  // namespace impl

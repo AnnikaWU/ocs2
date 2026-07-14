@@ -39,7 +39,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include <ocs2_collision_nextgen/impl/simd/AlignedAllocator.h>
 
-#if defined(OCS2_COLLISION_NEXTGEN_USE_AVX2) && defined(__AVX2__)
+#if defined(OCS2_COLLISION_NEXTGEN_USE_AVX2)
 #include <immintrin.h>
 #endif
 
@@ -54,10 +54,22 @@ class Mask;
 template <typename DataType, size_t DataWidth>
 class Vector;
 
+/** Returns {value[I0], value[I1], value[I2], value[I3]}. */
+template <size_t I0, size_t I1, size_t I2, size_t I3>
+inline Vector<double, 4> permute(const Vector<double, 4>& value);
+
+/** Selects lanes from two packets, where indices 0..3 address lhs and 4..7 address rhs. */
+template <size_t I0, size_t I1, size_t I2, size_t I3>
+inline Vector<double, 4> permute(const Vector<double, 4>& lhs, const Vector<double, 4>& rhs);
+
+/** Transposes four row packets into four column packets in place. */
+inline void transpose4x4(Vector<double, 4>& row0, Vector<double, 4>& row1, Vector<double, 4>& row2,
+                         Vector<double, 4>& row3);
+
 template <typename DataType>
 inline constexpr size_t NativeWidth = 1;
 
-#if defined(OCS2_COLLISION_NEXTGEN_USE_AVX2) && defined(__AVX2__)
+#if defined(OCS2_COLLISION_NEXTGEN_USE_AVX2)
 template <>
 inline constexpr size_t NativeWidth<double> = 4;
 #endif
@@ -279,7 +291,7 @@ Vector<DataType, DataWidth> select(const Mask<DataType, DataWidth>& mask, const 
   return result;
 }
 
-#if defined(OCS2_COLLISION_NEXTGEN_USE_AVX2) && defined(__AVX2__)
+#if defined(OCS2_COLLISION_NEXTGEN_USE_AVX2)
 
 template <>
 class alignas(32) Mask<double, 4> {
@@ -288,7 +300,20 @@ class alignas(32) Mask<double, 4> {
   static constexpr size_t width = 4;
 
   Mask() : value_(_mm256_setzero_pd()) {}
+  explicit Mask(bool value)
+      : value_(_mm256_castsi256_pd(_mm256_set1_epi64x(value ? -1 : 0))) {}
   explicit Mask(__m256d value) : value_(value) {}
+
+  bool lane(size_t index) const {
+    return (_mm256_movemask_pd(value_) & (1 << index)) != 0;
+  }
+  void setLane(size_t index, bool value) {
+    const __m256d laneMask = _mm256_castsi256_pd(
+        _mm256_set_epi64x(index == 3 ? -1 : 0, index == 2 ? -1 : 0,
+                          index == 1 ? -1 : 0, index == 0 ? -1 : 0));
+    value_ = value ? _mm256_or_pd(value_, laneMask)
+                   : _mm256_andnot_pd(laneMask, value_);
+  }
 
  private:
   __m256d value_;
@@ -363,6 +388,10 @@ class alignas(32) Vector<double, 4> {
   friend Vector sin(const Vector& value);
   friend Vector cos(const Vector& value);
   friend Vector select(const Mask<double, 4>& mask, const Vector& ifTrue, const Vector& ifFalse);
+  template <size_t I0, size_t I1, size_t I2, size_t I3>
+  friend Vector<double, 4> permute(const Vector<double, 4>& value);
+  template <size_t I0, size_t I1, size_t I2, size_t I3>
+  friend Vector<double, 4> permute(const Vector<double, 4>& lhs, const Vector<double, 4>& rhs);
 };
 
 inline Vector<double, 4> min(const Vector<double, 4>& lhs, const Vector<double, 4>& rhs) {
@@ -400,6 +429,61 @@ inline Vector<double, 4> select(const Mask<double, 4>& mask, const Vector<double
 }
 
 #endif
+
+template <size_t I0, size_t I1, size_t I2, size_t I3>
+inline Vector<double, 4> permute(const Vector<double, 4>& value) {
+  static_assert(I0 < 4 && I1 < 4 && I2 < 4 && I3 < 4, "SIMD permutation indices must be smaller than four");
+#if defined(OCS2_COLLISION_NEXTGEN_USE_AVX2)
+  return Vector<double, 4>(_mm256_permute4x64_pd(value.value_, _MM_SHUFFLE(I3, I2, I1, I0)));
+#else
+  const std::array<double, 4> lanes{value.lane(I0), value.lane(I1), value.lane(I2), value.lane(I3)};
+  return Vector<double, 4>::loadUnaligned(lanes.data());
+#endif
+}
+
+template <size_t I0, size_t I1, size_t I2, size_t I3>
+inline Vector<double, 4> permute(const Vector<double, 4>& lhs, const Vector<double, 4>& rhs) {
+  static_assert(I0 < 8 && I1 < 8 && I2 < 8 && I3 < 8, "SIMD binary permutation indices must be smaller than eight");
+#if defined(OCS2_COLLISION_NEXTGEN_USE_AVX2)
+  if constexpr (I0 == 0 && I1 == 4 && I2 == 2 && I3 == 6) {
+    return Vector<double, 4>(_mm256_unpacklo_pd(lhs.value_, rhs.value_));
+  } else if constexpr (I0 == 1 && I1 == 5 && I2 == 3 && I3 == 7) {
+    return Vector<double, 4>(_mm256_unpackhi_pd(lhs.value_, rhs.value_));
+  } else if constexpr (I0 == 0 && I1 == 1 && I2 == 4 && I3 == 5) {
+    return Vector<double, 4>(_mm256_permute2f128_pd(lhs.value_, rhs.value_, 0x20));
+  } else if constexpr (I0 == 2 && I1 == 3 && I2 == 6 && I3 == 7) {
+    return Vector<double, 4>(_mm256_permute2f128_pd(lhs.value_, rhs.value_, 0x31));
+  } else {
+    constexpr int control = _MM_SHUFFLE(I3 & 3, I2 & 3, I1 & 3, I0 & 3);
+    constexpr int rhsMask = (I0 >= 4 ? 0x1 : 0) | (I1 >= 4 ? 0x2 : 0) | (I2 >= 4 ? 0x4 : 0) |
+                            (I3 >= 4 ? 0x8 : 0);
+    const __m256d lhsPermuted = _mm256_permute4x64_pd(lhs.value_, control);
+    const __m256d rhsPermuted = _mm256_permute4x64_pd(rhs.value_, control);
+    return Vector<double, 4>(_mm256_blend_pd(lhsPermuted, rhsPermuted, rhsMask));
+  }
+#else
+  const std::array<double, 8> source{lhs.lane(0), lhs.lane(1), lhs.lane(2), lhs.lane(3),
+                                     rhs.lane(0), rhs.lane(1), rhs.lane(2), rhs.lane(3)};
+  const std::array<double, 4> lanes{source[I0], source[I1], source[I2], source[I3]};
+  return Vector<double, 4>::loadUnaligned(lanes.data());
+#endif
+}
+
+inline void transpose4x4(Vector<double, 4>& row0, Vector<double, 4>& row1, Vector<double, 4>& row2,
+                         Vector<double, 4>& row3) {
+  const Vector<double, 4> low01 = permute<0, 4, 2, 6>(row0, row1);
+  const Vector<double, 4> high01 = permute<1, 5, 3, 7>(row0, row1);
+  const Vector<double, 4> low23 = permute<0, 4, 2, 6>(row2, row3);
+  const Vector<double, 4> high23 = permute<1, 5, 3, 7>(row2, row3);
+  const Vector<double, 4> column0 = permute<0, 1, 4, 5>(low01, low23);
+  const Vector<double, 4> column1 = permute<0, 1, 4, 5>(high01, high23);
+  const Vector<double, 4> column2 = permute<2, 3, 6, 7>(low01, low23);
+  const Vector<double, 4> column3 = permute<2, 3, 6, 7>(high01, high23);
+  row0 = column0;
+  row1 = column1;
+  row2 = column2;
+  row3 = column3;
+}
 
 }  // namespace simd
 }  // namespace impl

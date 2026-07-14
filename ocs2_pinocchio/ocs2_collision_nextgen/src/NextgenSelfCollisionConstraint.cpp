@@ -30,11 +30,13 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <ocs2_collision_nextgen/NextgenSelfCollisionConstraint.h>
 
 #include <ocs2_collision_nextgen/impl/SphereCollisionModel.h>
+#include <ocs2_collision_nextgen/impl/SphereJacobianKernel.h>
 
-#include <Eigen/Geometry>
+#include <boost/dynamic_bitset.hpp>
 
 #include <pinocchio/algorithm/jacobian.hpp>
 
+#include <limits>
 #include <memory>
 #include <stdexcept>
 #include <tuple>
@@ -45,7 +47,12 @@ namespace collision_nextgen {
 
 namespace {
 
-using vector3_t = impl::vector3_t;
+std::int64_t checkedJointIndex(size_t joint) {
+  if (joint > static_cast<size_t>(std::numeric_limits<std::int64_t>::max())) {
+    throw std::runtime_error("[NextgenSelfCollisionConstraint] parent joint index does not fit into int64_t for SIMD gather.");
+  }
+  return static_cast<std::int64_t>(joint);
+}
 
 }  // namespace
 
@@ -56,15 +63,73 @@ NextgenSelfCollisionConstraint::NextgenSelfCollisionConstraint(const PinocchioSt
     : StateConstraint(ConstraintOrder::Linear),
       sphereModelPtr_(std::make_unique<impl::SphereCollisionModel>(model, geometryModel)),
       minimumDistance_(minimumDistance),
-      mappingPtr_(mapping.clone()) {}
+      mappingPtr_(mapping.clone()) {
+  initializeJacobianStorage(model);
+}
 
 NextgenSelfCollisionConstraint::NextgenSelfCollisionConstraint(const NextgenSelfCollisionConstraint& other)
     : StateConstraint(other),
       sphereModelPtr_(std::make_unique<impl::SphereCollisionModel>(*other.sphereModelPtr_)),
       minimumDistance_(other.minimumDistance_),
-      mappingPtr_(other.mappingPtr_->clone()) {}
+      mappingPtr_(other.mappingPtr_->clone()),
+      evaluationScratchPtr_(std::make_unique<impl::SphereCollisionEvaluation>(*other.evaluationScratchPtr_)),
+      activeJoints_(other.activeJoints_),
+      firstJoint_(other.firstJoint_),
+      secondJoint_(other.secondJoint_),
+      jointRuns_(other.jointRuns_),
+      jointJacobianTemporary_(other.jointJacobianTemporary_),
+      jointJacobianCache_(other.jointJacobianCache_),
+      jointJacobianDofStride_(other.jointJacobianDofStride_),
+      dfdqScratch_(other.dfdqScratch_),
+      dfdvScratch_(other.dfdvScratch_) {}
 
 NextgenSelfCollisionConstraint::~NextgenSelfCollisionConstraint() = default;
+
+void NextgenSelfCollisionConstraint::initializeJacobianStorage(const pinocchio::Model& model) {
+  const size_t numPairs = sphereModelPtr_->getNumPairs();
+  const size_t numJoints = model.joints.size();
+  evaluationScratchPtr_ = std::make_unique<impl::SphereCollisionEvaluation>(numPairs);
+  firstJoint_.resize(numPairs);
+  secondJoint_.resize(numPairs);
+
+  boost::dynamic_bitset<> activeJointMask(numJoints);
+  for (size_t pair = 0; pair < numPairs; ++pair) {
+    const size_t first = sphereModelPtr_->getFirstParentJoint(pair);
+    const size_t second = sphereModelPtr_->getSecondParentJoint(pair);
+    if (first >= numJoints || second >= numJoints) {
+      throw std::runtime_error("[NextgenSelfCollisionConstraint] parent joint index is outside the Pinocchio model.");
+    }
+    firstJoint_[pair] = checkedJointIndex(first);
+    secondJoint_[pair] = checkedJointIndex(second);
+    activeJointMask.set(first);
+    activeJointMask.set(second);
+  }
+  if (numPairs > 0) {
+    size_t runBegin = 0;
+    for (size_t pair = 1; pair <= numPairs; ++pair) {
+      const bool runEnds =
+          pair == numPairs || firstJoint_[pair] != firstJoint_[runBegin] ||
+          secondJoint_[pair] != secondJoint_[runBegin];
+      if (runEnds) {
+        jointRuns_.push_back(
+            {runBegin, pair - runBegin,
+             static_cast<size_t>(firstJoint_[runBegin]),
+             static_cast<size_t>(secondJoint_[runBegin])});
+        runBegin = pair;
+      }
+    }
+  }
+  for (size_t joint = activeJointMask.find_first(); joint != boost::dynamic_bitset<>::npos;
+       joint = activeJointMask.find_next(joint)) {
+    activeJoints_.push_back(joint);
+  }
+
+  jointJacobianTemporary_.resize(6, model.nv);
+  jointJacobianDofStride_ = impl::sphereJacobianDofStride(model.nv);
+  jointJacobianCache_.resize(6 * jointJacobianDofStride_ * numJoints, 0.0);
+  dfdqScratch_.resize(numPairs, model.nq);
+  dfdvScratch_.resize(numPairs, model.nq);
+}
 
 size_t NextgenSelfCollisionConstraint::getNumConstraints(scalar_t time) const {
   return sphereModelPtr_->getNumPairs();
@@ -82,46 +147,39 @@ VectorFunctionLinearApproximation NextgenSelfCollisionConstraint::getLinearAppro
   const auto& pinocchioInterface = getPinocchioInterface(preComputation);
   mappingPtr_->setPinocchioInterface(pinocchioInterface);
 
-  const auto evaluation = sphereModelPtr_->evaluate(pinocchioInterface);
+  auto& evaluation = *evaluationScratchPtr_;
+  sphereModelPtr_->evaluate(pinocchioInterface, evaluation);
   const auto& model = pinocchioInterface.getModel();
 
   VectorFunctionLinearApproximation constraint;
   constraint.f = evaluation.distances;
   constraint.f.array() -= minimumDistance_;
 
-  matrix_t dfdq = matrix_t::Zero(evaluation.distances.rows(), model.nq);
-  std::vector<matrix_t> jointJacobianCache(model.joints.size());
-  std::vector<bool> jointJacobianCached(model.joints.size(), false);
-  auto getCachedJointJacobian = [&](size_t joint) -> const matrix_t& {
-    if (joint >= jointJacobianCache.size()) {
-      throw std::runtime_error("[NextgenSelfCollisionConstraint] parent joint index is outside the Pinocchio model.");
+  const size_t numJoints = model.joints.size();
+  const size_t numDofs = static_cast<size_t>(model.nv);
+  for (const size_t joint : activeJoints_) {
+    jointJacobianTemporary_.setZero();
+    pinocchio::getJointJacobian(model, pinocchioInterface.getData(), joint, pinocchio::ReferenceFrame::LOCAL_WORLD_ALIGNED,
+                                jointJacobianTemporary_);
+    for (size_t row = 0; row < 6; ++row) {
+      for (size_t dof = 0; dof < numDofs; ++dof) {
+        jointJacobianCache_[(joint * 6 + row) * jointJacobianDofStride_ + dof] =
+            jointJacobianTemporary_(static_cast<Eigen::Index>(row), static_cast<Eigen::Index>(dof));
+      }
     }
-    if (!jointJacobianCached[joint]) {
-      jointJacobianCache[joint].setZero(6, model.nv);
-      pinocchio::getJointJacobian(model, pinocchioInterface.getData(), joint, pinocchio::ReferenceFrame::LOCAL_WORLD_ALIGNED,
-                                  jointJacobianCache[joint]);
-      jointJacobianCached[joint] = true;
-    }
-    return jointJacobianCache[joint];
-  };
-
-  for (int i = 0; i < evaluation.distances.rows(); ++i) {
-    const auto pairIndex = static_cast<size_t>(i);
-    const auto firstJoint = sphereModelPtr_->getFirstParentJoint(pairIndex);
-    const auto secondJoint = sphereModelPtr_->getSecondParentJoint(pairIndex);
-    const auto& firstJacobian = getCachedJointJacobian(firstJoint);
-    const auto& secondJacobian = getCachedJointJacobian(secondJoint);
-    const auto& normal = evaluation.jacobianNormals[pairIndex];
-    const vector3_t firstOffset = evaluation.firstCenters[pairIndex] - pinocchioInterface.getData().oMi[firstJoint].translation();
-    const vector3_t secondOffset = evaluation.secondCenters[pairIndex] - pinocchioInterface.getData().oMi[secondJoint].translation();
-
-    dfdq.row(i).leftCols(model.nv).noalias() = normal.transpose() * (secondJacobian.topRows(3) - firstJacobian.topRows(3)) -
-                                               normal.cross(secondOffset).transpose() * secondJacobian.bottomRows(3) +
-                                               normal.cross(firstOffset).transpose() * firstJacobian.bottomRows(3);
   }
 
-  matrix_t dfdv = matrix_t::Zero(dfdq.rows(), dfdq.cols());
-  std::tie(constraint.dfdx, std::ignore) = mappingPtr_->getOcs2Jacobian(state, dfdq, dfdv);
+  dfdqScratch_.setZero();
+  impl::computeSpherePairJacobians(
+      jointJacobianCache_.data(), numJoints, numDofs, jointJacobianDofStride_, firstJoint_.data(), secondJoint_.data(),
+      evaluation.firstAngularX.data(), evaluation.firstAngularY.data(), evaluation.firstAngularZ.data(),
+      evaluation.secondAngularX.data(), evaluation.secondAngularY.data(), evaluation.secondAngularZ.data(),
+      evaluation.normalX.data(), evaluation.normalY.data(), evaluation.normalZ.data(),
+      static_cast<size_t>(evaluation.distances.rows()), dfdqScratch_.data(),
+      jointRuns_.data(), jointRuns_.size());
+
+  dfdvScratch_.setZero();
+  std::tie(constraint.dfdx, std::ignore) = mappingPtr_->getOcs2Jacobian(state, dfdqScratch_, dfdvScratch_);
   return constraint;
 }
 

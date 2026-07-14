@@ -17,6 +17,7 @@ find_package(Boost REQUIRED COMPONENTS system filesystem log_setup log)
 set(${PROJECT_NAME}_SOURCES
   src/NextgenSelfCollisionConstraint.cpp
   src/impl/SphereDistanceKernel.cpp
+  src/impl/SphereJacobianKernel.cpp
   src/impl/SphereCollisionModel.cpp
 )
 
@@ -24,26 +25,27 @@ add_library(${PROJECT_NAME}
   ${${PROJECT_NAME}_SOURCES}
 )
 
-set(${PROJECT_NAME}_PINOCCHIO_IMPL_COMPILE_OPTIONS "-std=gnu++20")
-set(${PROJECT_NAME}_SIMD_IMPL_COMPILE_OPTIONS "-std=gnu++20")
+target_compile_features(${PROJECT_NAME} PUBLIC cxx_std_17)
+
+set(${PROJECT_NAME}_SIMD_IMPL_COMPILE_OPTIONS)
 set(OCS2_COLLISION_NEXTGEN_AVX2_ENABLED FALSE)
-if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64|i.86")
-  check_cxx_compiler_flag("-mavx2" OCS2_COLLISION_NEXTGEN_HAS_AVX2_FLAG)
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64|amd64|x64|X86_64")
+  if(MSVC)
+    set(OCS2_COLLISION_NEXTGEN_AVX2_OPTION "/arch:AVX2")
+  else()
+    set(OCS2_COLLISION_NEXTGEN_AVX2_OPTION "-mavx2")
+  endif()
+  check_cxx_compiler_flag("${OCS2_COLLISION_NEXTGEN_AVX2_OPTION}" OCS2_COLLISION_NEXTGEN_HAS_AVX2_FLAG)
   if(OCS2_COLLISION_NEXTGEN_HAS_AVX2_FLAG)
     set(OCS2_COLLISION_NEXTGEN_AVX2_ENABLED TRUE)
-    list(APPEND ${PROJECT_NAME}_SIMD_IMPL_COMPILE_OPTIONS "-mavx2")
+    list(APPEND ${PROJECT_NAME}_SIMD_IMPL_COMPILE_OPTIONS "${OCS2_COLLISION_NEXTGEN_AVX2_OPTION}")
     target_compile_definitions(${PROJECT_NAME} PRIVATE OCS2_COLLISION_NEXTGEN_USE_AVX2=1)
   endif()
 endif()
 
 set_source_files_properties(
-  src/impl/SphereCollisionModel.cpp
-  PROPERTIES
-    COMPILE_OPTIONS "${${PROJECT_NAME}_PINOCCHIO_IMPL_COMPILE_OPTIONS}"
-)
-
-set_source_files_properties(
   src/impl/SphereDistanceKernel.cpp
+  src/impl/SphereJacobianKernel.cpp
   PROPERTIES
     COMPILE_OPTIONS "${${PROJECT_NAME}_SIMD_IMPL_COMPILE_OPTIONS}"
 )
@@ -105,6 +107,7 @@ ament_export_dependencies(
 
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
+  find_package(benchmark QUIET)
 
   ament_add_gtest(SimdVectorTest
     test/testSimdVector.cpp
@@ -115,6 +118,34 @@ if(BUILD_TESTING)
   target_compile_options(SimdVectorTest PRIVATE ${${PROJECT_NAME}_SIMD_IMPL_COMPILE_OPTIONS})
   if(OCS2_COLLISION_NEXTGEN_AVX2_ENABLED)
     target_compile_definitions(SimdVectorTest PRIVATE OCS2_COLLISION_NEXTGEN_USE_AVX2=1)
+  endif()
+
+  ament_add_gtest(SphereKernelsTest
+    test/testSphereKernels.cpp
+  )
+  target_link_libraries(SphereKernelsTest
+    ${PROJECT_NAME}
+  )
+  target_compile_options(SphereKernelsTest PRIVATE ${${PROJECT_NAME}_SIMD_IMPL_COMPILE_OPTIONS})
+  if(OCS2_COLLISION_NEXTGEN_AVX2_ENABLED)
+    target_compile_definitions(SphereKernelsTest PRIVATE OCS2_COLLISION_NEXTGEN_USE_AVX2=1)
+  endif()
+
+  if(benchmark_FOUND)
+    add_executable(SphereKernelsBenchmark
+      benchmark/benchmarkSphereKernels.cpp
+      benchmark/RawSphereDistanceKernel.cpp
+    )
+    target_link_libraries(SphereKernelsBenchmark
+      PRIVATE
+        ${PROJECT_NAME}
+        benchmark::benchmark
+        benchmark::benchmark_main
+    )
+    target_compile_options(SphereKernelsBenchmark PRIVATE ${${PROJECT_NAME}_SIMD_IMPL_COMPILE_OPTIONS})
+    if(OCS2_COLLISION_NEXTGEN_AVX2_ENABLED)
+      target_compile_definitions(SphereKernelsBenchmark PRIVATE OCS2_COLLISION_NEXTGEN_USE_AVX2=1)
+    endif()
   endif()
 endif()
 

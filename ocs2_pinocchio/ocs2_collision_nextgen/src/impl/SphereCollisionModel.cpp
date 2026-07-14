@@ -146,15 +146,15 @@ SphereCollisionModel::SphereCollisionModel(const pinocchio::Model& model, const 
     secondObject_.push_back(checkedObjectIndex(pair.second));
     pairRadiusSum_.push_back(radius_[pair.first] + radius_[pair.second]);
   }
+
+  worldCenterScratch_.x.resize(numObjects);
+  worldCenterScratch_.y.resize(numObjects);
+  worldCenterScratch_.z.resize(numObjects);
 }
 
-SphereCollisionModel::WorldCenterScratch SphereCollisionModel::computeWorldCenters(const PinocchioInterface& pinocchioInterface) const {
+const SphereCollisionModel::WorldCenterScratch& SphereCollisionModel::computeWorldCenters(
+    const PinocchioInterface& pinocchioInterface) const {
   const auto& data = pinocchioInterface.getData();
-
-  WorldCenterScratch scratch;
-  scratch.x.resize(getNumObjects());
-  scratch.y.resize(getNumObjects());
-  scratch.z.resize(getNumObjects());
 
   for (size_t objectIndex = 0; objectIndex < getNumObjects(); ++objectIndex) {
     const size_t joint = parentJoint_[objectIndex];
@@ -168,12 +168,12 @@ SphereCollisionModel::WorldCenterScratch SphereCollisionModel::computeWorldCente
     const auto& oMi = data.oMi[joint];
     const vector3_t localCenter(localX_[objectIndex], localY_[objectIndex], localZ_[objectIndex]);
     const vector3_t worldCenter = oMi.rotation() * localCenter + oMi.translation();
-    scratch.x[objectIndex] = worldCenter.x();
-    scratch.y[objectIndex] = worldCenter.y();
-    scratch.z[objectIndex] = worldCenter.z();
+    worldCenterScratch_.x[objectIndex] = worldCenter.x();
+    worldCenterScratch_.y[objectIndex] = worldCenter.y();
+    worldCenterScratch_.z[objectIndex] = worldCenter.z();
   }
 
-  return scratch;
+  return worldCenterScratch_;
 }
 
 void SphereCollisionModel::computeDistances(const WorldCenterScratch& worldCenters, double* distances, double* normalX, double* normalY,
@@ -184,34 +184,49 @@ void SphereCollisionModel::computeDistances(const WorldCenterScratch& worldCente
 
 vector_t SphereCollisionModel::getDistances(const PinocchioInterface& pinocchioInterface) const {
   vector_t distances(getNumPairs());
-  const WorldCenterScratch worldCenters = computeWorldCenters(pinocchioInterface);
+  const auto& worldCenters = computeWorldCenters(pinocchioInterface);
   computeDistances(worldCenters, distances.data(), nullptr, nullptr, nullptr);
   return distances;
 }
 
 SphereCollisionEvaluation SphereCollisionModel::evaluate(const PinocchioInterface& pinocchioInterface) const {
-  SphereCollisionEvaluation evaluation;
-  evaluation.distances.resize(getNumPairs());
-  evaluation.firstCenters.resize(getNumPairs());
-  evaluation.secondCenters.resize(getNumPairs());
-  evaluation.jacobianNormals.resize(getNumPairs());
+  SphereCollisionEvaluation evaluation(getNumPairs());
+  evaluate(pinocchioInterface, evaluation);
+  return evaluation;
+}
 
-  AlignedVector<double> normalX(getNumPairs());
-  AlignedVector<double> normalY(getNumPairs());
-  AlignedVector<double> normalZ(getNumPairs());
+void SphereCollisionModel::evaluate(const PinocchioInterface& pinocchioInterface, SphereCollisionEvaluation& evaluation) const {
+  if (evaluation.distances.size() != static_cast<Eigen::Index>(getNumPairs())) {
+    evaluation.resize(getNumPairs());
+  }
 
-  const WorldCenterScratch worldCenters = computeWorldCenters(pinocchioInterface);
-  computeDistances(worldCenters, evaluation.distances.data(), normalX.data(), normalY.data(), normalZ.data());
+  const auto& worldCenters = computeWorldCenters(pinocchioInterface);
+  computeDistances(worldCenters, evaluation.distances.data(), evaluation.normalX.data(), evaluation.normalY.data(),
+                   evaluation.normalZ.data());
 
   for (size_t pairIndex = 0; pairIndex < getNumPairs(); ++pairIndex) {
     const auto first = static_cast<size_t>(firstObject_[pairIndex]);
     const auto second = static_cast<size_t>(secondObject_[pairIndex]);
-    evaluation.firstCenters[pairIndex] = vector3_t(worldCenters.x[first], worldCenters.y[first], worldCenters.z[first]);
-    evaluation.secondCenters[pairIndex] = vector3_t(worldCenters.x[second], worldCenters.y[second], worldCenters.z[second]);
-    evaluation.jacobianNormals[pairIndex] = vector3_t(normalX[pairIndex], normalY[pairIndex], normalZ[pairIndex]);
+    const auto firstJoint = parentJoint_[first];
+    const auto secondJoint = parentJoint_[second];
+    const auto& firstJointPosition = pinocchioInterface.getData().oMi[firstJoint].translation();
+    const auto& secondJointPosition = pinocchioInterface.getData().oMi[secondJoint].translation();
+    const double firstOffsetX = worldCenters.x[first] - firstJointPosition.x();
+    const double firstOffsetY = worldCenters.y[first] - firstJointPosition.y();
+    const double firstOffsetZ = worldCenters.z[first] - firstJointPosition.z();
+    const double secondOffsetX = worldCenters.x[second] - secondJointPosition.x();
+    const double secondOffsetY = worldCenters.y[second] - secondJointPosition.y();
+    const double secondOffsetZ = worldCenters.z[second] - secondJointPosition.z();
+    evaluation.firstAngularX[pairIndex] = evaluation.normalY[pairIndex] * firstOffsetZ - evaluation.normalZ[pairIndex] * firstOffsetY;
+    evaluation.firstAngularY[pairIndex] = evaluation.normalZ[pairIndex] * firstOffsetX - evaluation.normalX[pairIndex] * firstOffsetZ;
+    evaluation.firstAngularZ[pairIndex] = evaluation.normalX[pairIndex] * firstOffsetY - evaluation.normalY[pairIndex] * firstOffsetX;
+    evaluation.secondAngularX[pairIndex] =
+        evaluation.normalY[pairIndex] * secondOffsetZ - evaluation.normalZ[pairIndex] * secondOffsetY;
+    evaluation.secondAngularY[pairIndex] =
+        evaluation.normalZ[pairIndex] * secondOffsetX - evaluation.normalX[pairIndex] * secondOffsetZ;
+    evaluation.secondAngularZ[pairIndex] =
+        evaluation.normalX[pairIndex] * secondOffsetY - evaluation.normalY[pairIndex] * secondOffsetX;
   }
-
-  return evaluation;
 }
 
 size_t SphereCollisionModel::getFirstParentJoint(size_t pairIndex) const {

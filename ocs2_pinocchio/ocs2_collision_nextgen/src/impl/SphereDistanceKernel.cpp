@@ -31,6 +31,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include <ocs2_collision_nextgen/impl/simd/Vector.h>
 
+#include <algorithm>
 #include <cmath>
 
 namespace ocs2 {
@@ -54,16 +55,10 @@ inline void computeSpherePairDistanceScalar(const double* worldX, const double* 
   distances[i] = signedDistance;
 
   if (normalX != nullptr && normalY != nullptr && normalZ != nullptr) {
-    if (centerDistance < kEpsilon) {
-      normalX[i] = 1.0;
-      normalY[i] = 0.0;
-      normalZ[i] = 0.0;
-    } else {
-      const double invDistance = 1.0 / centerDistance;
-      normalX[i] = dx * invDistance;
-      normalY[i] = dy * invDistance;
-      normalZ[i] = dz * invDistance;
-    }
+    const double invDistance = 1.0 / std::max(centerDistance, kEpsilon);
+    normalX[i] = dx * invDistance;
+    normalY[i] = dy * invDistance;
+    normalZ[i] = dz * invDistance;
   }
 }
 
@@ -76,7 +71,6 @@ void computeSpherePairDistancesImpl(const double* worldX, const double* worldY, 
   constexpr double kEpsilonValue = 1e-12;
   const NativePacket epsilon = NativePacket::set(kEpsilonValue);
   const NativePacket one = NativePacket::set(1.0);
-  const NativePacket zero = NativePacket::set(0.0);
   const bool computeNormal = normalX != nullptr && normalY != nullptr && normalZ != nullptr;
 
   size_t i = 0;
@@ -92,17 +86,16 @@ void computeSpherePairDistancesImpl(const double* worldX, const double* worldY, 
     const NativePacket dy = secondY - firstY;
     const NativePacket dz = secondZ - firstZ;
     const NativePacket centerDistance = simd::sqrt(dx * dx + dy * dy + dz * dz);
-    const NativePacket radiusSumPacket = NativePacket::loadAligned(radiusSum + i);
+    const NativePacket radiusSumPacket = NativePacket::loadUnaligned(radiusSum + i);
     const NativePacket signedDistance = centerDistance - radiusSumPacket;
     signedDistance.storeUnaligned(distances + i);
 
     if (computeNormal) {
-      const auto zeroDistanceMask = centerDistance < epsilon;
       const NativePacket safeDistance = simd::max(centerDistance, epsilon);
       const NativePacket invDistance = one / safeDistance;
-      simd::select(zeroDistanceMask, one, dx * invDistance).storeAligned(normalX + i);
-      simd::select(zeroDistanceMask, zero, dy * invDistance).storeAligned(normalY + i);
-      simd::select(zeroDistanceMask, zero, dz * invDistance).storeAligned(normalZ + i);
+      (dx * invDistance).storeUnaligned(normalX + i);
+      (dy * invDistance).storeUnaligned(normalY + i);
+      (dz * invDistance).storeUnaligned(normalZ + i);
     }
   }
 
