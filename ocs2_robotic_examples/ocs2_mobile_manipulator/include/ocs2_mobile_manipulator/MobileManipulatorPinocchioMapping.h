@@ -46,7 +46,8 @@ using MobileManipulatorPinocchioMappingCppAd = MobileManipulatorPinocchioMapping
  * Pinocchio state and input mapping.
  */
 template <typename SCALAR>
-class MobileManipulatorPinocchioMappingTpl final : public PinocchioStateInputMapping<SCALAR> {
+class MobileManipulatorPinocchioMappingTpl final : public PinocchioStateInputMapping<SCALAR>,
+                                                   public PinocchioStateOnlyJacobianMapping<SCALAR> {
  public:
   using Base = PinocchioStateInputMapping<SCALAR>;
   using typename Base::matrix_t;
@@ -88,6 +89,9 @@ class MobileManipulatorPinocchioMappingTpl final : public PinocchioStateInputMap
    * @return a pair {dfdx, dfdu} containing the jacobians with respect to the system state and input
    */
   std::pair<matrix_t, matrix_t> getOcs2Jacobian(const vector_t& state, const matrix_t& Jq, const matrix_t& Jv) const override;
+
+  /** Maps dfdq to dfdx without materializing an unused dfdu. */
+  matrix_t getOcs2StateJacobian(const vector_t& state, const matrix_t& Jq, const matrix_t& Jv) const override;
 
   /**
    * Returns the mobile manipulator model info.

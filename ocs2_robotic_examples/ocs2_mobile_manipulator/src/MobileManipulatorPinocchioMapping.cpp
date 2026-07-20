@@ -128,6 +128,19 @@ auto MobileManipulatorPinocchioMappingTpl<SCALAR>::getOcs2Jacobian(const vector_
   }  // end of switch-case
 }
 
+/******************************************************************************************************/
+/******************************************************************************************************/
+/******************************************************************************************************/
+template <typename SCALAR>
+auto MobileManipulatorPinocchioMappingTpl<SCALAR>::getOcs2StateJacobian(const vector_t& state, const matrix_t& Jq,
+                                                                        const matrix_t& Jv) const -> matrix_t {
+  // For every supported mobile-manipulator model, q is parameterized directly
+  // by the OCS2 state. Only the velocity/input mapping is model-dependent.
+  (void)state;
+  (void)Jv;
+  return Jq;
+}
+
 // explicit template instantiation
 template class ocs2::mobile_manipulator::MobileManipulatorPinocchioMappingTpl<ocs2::scalar_t>;
 template class ocs2::mobile_manipulator::MobileManipulatorPinocchioMappingTpl<ocs2::ad_scalar_t>;
