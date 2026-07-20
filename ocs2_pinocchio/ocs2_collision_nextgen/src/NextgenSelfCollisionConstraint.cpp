@@ -127,8 +127,11 @@ void NextgenSelfCollisionConstraint::initializeJacobianStorage(const pinocchio::
   jointJacobianTemporary_.resize(6, model.nv);
   jointJacobianDofStride_ = impl::sphereJacobianDofStride(model.nv);
   jointJacobianCache_.resize(6 * jointJacobianDofStride_ * numJoints, 0.0);
-  dfdqScratch_.resize(numPairs, model.nq);
-  dfdvScratch_.resize(numPairs, model.nq);
+  // The kernel overwrites the first nv columns on every call. Keep the
+  // possible nq > nv tail and the velocity Jacobian deterministically zero
+  // without clearing the full pair-by-coordinate matrices in the hot path.
+  dfdqScratch_.setZero(numPairs, model.nq);
+  dfdvScratch_.setZero(numPairs, model.nq);
 }
 
 size_t NextgenSelfCollisionConstraint::getNumConstraints(scalar_t time) const {
@@ -169,7 +172,6 @@ VectorFunctionLinearApproximation NextgenSelfCollisionConstraint::getLinearAppro
     }
   }
 
-  dfdqScratch_.setZero();
   impl::computeSpherePairJacobians(
       jointJacobianCache_.data(), numJoints, numDofs, jointJacobianDofStride_, firstJoint_.data(), secondJoint_.data(),
       evaluation.firstAngularX.data(), evaluation.firstAngularY.data(), evaluation.firstAngularZ.data(),
@@ -178,8 +180,11 @@ VectorFunctionLinearApproximation NextgenSelfCollisionConstraint::getLinearAppro
       static_cast<size_t>(evaluation.distances.rows()), dfdqScratch_.data(),
       jointRuns_.data(), jointRuns_.size());
 
-  dfdvScratch_.setZero();
-  std::tie(constraint.dfdx, std::ignore) = mappingPtr_->getOcs2Jacobian(state, dfdqScratch_, dfdvScratch_);
+  if (const auto* stateOnlyMapping = dynamic_cast<const PinocchioStateOnlyJacobianMapping<scalar_t>*>(mappingPtr_.get())) {
+    constraint.dfdx = stateOnlyMapping->getOcs2StateJacobian(state, dfdqScratch_, dfdvScratch_);
+  } else {
+    std::tie(constraint.dfdx, std::ignore) = mappingPtr_->getOcs2Jacobian(state, dfdqScratch_, dfdvScratch_);
+  }
   return constraint;
 }
 

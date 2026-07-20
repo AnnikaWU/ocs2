@@ -32,6 +32,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <ocs2_collision_nextgen/impl/simd/Vector.h>
 
 #include <algorithm>
+#include <cassert>
 #include <cmath>
 
 namespace ocs2 {
@@ -40,10 +41,26 @@ namespace impl {
 
 namespace {
 
-inline void computeSpherePairDistanceScalar(const double* worldX, const double* worldY, const double* worldZ,
-                                            const std::int64_t* firstObject, const std::int64_t* secondObject,
-                                            const double* radiusSum, size_t i, double* distances, double* normalX,
-                                            double* normalY, double* normalZ) {
+inline void computeSpherePairDistanceScalar(
+
+    // Per-object sphere centers in the world frame.
+    const double* worldX, const double* worldY, const double* worldZ,
+
+    // Per-object world-frame vectors from the parent-joint origin to the sphere center.
+    const double* objectOffsetX, const double* objectOffsetY, const double* objectOffsetZ,
+
+    // Per-pair sphere-object indices into the arrays above; radiusSum[pair] is r_first + r_second.
+    // i selects the pair evaluated by this scalar tail call.
+    const std::int64_t* firstObject, const std::int64_t* secondObject, const double* radiusSum, size_t i,
+
+    // Per-pair signed-distance and first-to-second unit-normal outputs.
+    double* distances, double* normalX, double* normalY, double* normalZ,
+
+    // Per-pair normal cross objectOffset[firstObject[pair]] angular coefficients.
+    double* firstAngularX, double* firstAngularY, double* firstAngularZ,
+
+    // Per-pair normal cross objectOffset[secondObject[pair]] angular coefficients.
+    double* secondAngularX, double* secondAngularY, double* secondAngularZ) {
   constexpr double kEpsilon = 1e-12;
   const std::int64_t first = firstObject[i];
   const std::int64_t second = secondObject[i];
@@ -56,22 +73,66 @@ inline void computeSpherePairDistanceScalar(const double* worldX, const double* 
 
   if (normalX != nullptr && normalY != nullptr && normalZ != nullptr) {
     const double invDistance = 1.0 / std::max(centerDistance, kEpsilon);
-    normalX[i] = dx * invDistance;
-    normalY[i] = dy * invDistance;
-    normalZ[i] = dz * invDistance;
+    const double nx = dx * invDistance;
+    const double ny = dy * invDistance;
+    const double nz = dz * invDistance;
+    normalX[i] = nx;
+    normalY[i] = ny;
+    normalZ[i] = nz;
+
+    if (firstAngularX != nullptr) {
+      const double firstOffsetX = objectOffsetX[first];
+      const double firstOffsetY = objectOffsetY[first];
+      const double firstOffsetZ = objectOffsetZ[first];
+      const double secondOffsetX = objectOffsetX[second];
+      const double secondOffsetY = objectOffsetY[second];
+      const double secondOffsetZ = objectOffsetZ[second];
+      firstAngularX[i] = ny * firstOffsetZ - nz * firstOffsetY;
+      firstAngularY[i] = nz * firstOffsetX - nx * firstOffsetZ;
+      firstAngularZ[i] = nx * firstOffsetY - ny * firstOffsetX;
+      secondAngularX[i] = ny * secondOffsetZ - nz * secondOffsetY;
+      secondAngularY[i] = nz * secondOffsetX - nx * secondOffsetZ;
+      secondAngularZ[i] = nx * secondOffsetY - ny * secondOffsetX;
+    }
   }
 }
 
-void computeSpherePairDistancesImpl(const double* worldX, const double* worldY, const double* worldZ,
-                                    const std::int64_t* firstObject, const std::int64_t* secondObject,
-                                    const double* radiusSum, size_t numPairs, double* distances, double* normalX,
-                                    double* normalY, double* normalZ) {
+void computeSpherePairDistancesImpl(
+
+    // Per-object sphere centers in the world frame.
+    const double* worldX, const double* worldY, const double* worldZ,
+
+    // Per-object world-frame vectors from the parent-joint origin to the sphere center.
+    const double* objectOffsetX, const double* objectOffsetY, const double* objectOffsetZ,
+
+    // Per-pair sphere-object indices into the arrays above; radiusSum[pair] is r_first + r_second.
+    const std::int64_t* firstObject, const std::int64_t* secondObject, const double* radiusSum, size_t numPairs,
+
+    // Per-pair signed-distance and first-to-second unit-normal outputs.
+    double* distances, double* normalX, double* normalY, double* normalZ,
+
+    // Per-pair normal cross objectOffset[firstObject[pair]] angular coefficients.
+    double* firstAngularX, double* firstAngularY, double* firstAngularZ,
+
+    // Per-pair normal cross objectOffset[secondObject[pair]] angular coefficients.
+    double* secondAngularX, double* secondAngularY, double* secondAngularZ) {
   using NativePacket = simd::Vector<double, simd::NativeWidth<double>>;
 
   constexpr double kEpsilonValue = 1e-12;
   const NativePacket epsilon = NativePacket::set(kEpsilonValue);
   const NativePacket one = NativePacket::set(1.0);
   const bool computeNormal = normalX != nullptr && normalY != nullptr && normalZ != nullptr;
+  const bool computeAngular = firstAngularX != nullptr;
+
+  assert((normalX == nullptr) == (normalY == nullptr));
+  assert((normalX == nullptr) == (normalZ == nullptr));
+  assert(!computeAngular || computeNormal);
+  assert(!computeAngular || (objectOffsetX != nullptr && objectOffsetY != nullptr && objectOffsetZ != nullptr));
+  assert((firstAngularX == nullptr) == (firstAngularY == nullptr));
+  assert((firstAngularX == nullptr) == (firstAngularZ == nullptr));
+  assert((firstAngularX == nullptr) == (secondAngularX == nullptr));
+  assert((firstAngularX == nullptr) == (secondAngularY == nullptr));
+  assert((firstAngularX == nullptr) == (secondAngularZ == nullptr));
 
   size_t i = 0;
   for (; i + NativePacket::width <= numPairs; i += NativePacket::width) {
@@ -93,25 +154,76 @@ void computeSpherePairDistancesImpl(const double* worldX, const double* worldY, 
     if (computeNormal) {
       const NativePacket safeDistance = simd::max(centerDistance, epsilon);
       const NativePacket invDistance = one / safeDistance;
-      (dx * invDistance).storeUnaligned(normalX + i);
-      (dy * invDistance).storeUnaligned(normalY + i);
-      (dz * invDistance).storeUnaligned(normalZ + i);
+      const NativePacket nx = dx * invDistance;
+      const NativePacket ny = dy * invDistance;
+      const NativePacket nz = dz * invDistance;
+      nx.storeUnaligned(normalX + i);
+      ny.storeUnaligned(normalY + i);
+      nz.storeUnaligned(normalZ + i);
+
+      if (computeAngular) {
+        const NativePacket firstOffsetX = NativePacket::gather(objectOffsetX, firstObject + i);
+        const NativePacket firstOffsetY = NativePacket::gather(objectOffsetY, firstObject + i);
+        const NativePacket firstOffsetZ = NativePacket::gather(objectOffsetZ, firstObject + i);
+        const NativePacket secondOffsetX = NativePacket::gather(objectOffsetX, secondObject + i);
+        const NativePacket secondOffsetY = NativePacket::gather(objectOffsetY, secondObject + i);
+        const NativePacket secondOffsetZ = NativePacket::gather(objectOffsetZ, secondObject + i);
+        (ny * firstOffsetZ - nz * firstOffsetY).storeUnaligned(firstAngularX + i);
+        (nz * firstOffsetX - nx * firstOffsetZ).storeUnaligned(firstAngularY + i);
+        (nx * firstOffsetY - ny * firstOffsetX).storeUnaligned(firstAngularZ + i);
+        (ny * secondOffsetZ - nz * secondOffsetY).storeUnaligned(secondAngularX + i);
+        (nz * secondOffsetX - nx * secondOffsetZ).storeUnaligned(secondAngularY + i);
+        (nx * secondOffsetY - ny * secondOffsetX).storeUnaligned(secondAngularZ + i);
+      }
     }
   }
 
   for (; i < numPairs; ++i) {
-    computeSpherePairDistanceScalar(worldX, worldY, worldZ, firstObject, secondObject, radiusSum, i, distances, normalX, normalY,
-                                    normalZ);
+    computeSpherePairDistanceScalar(worldX, worldY, worldZ, objectOffsetX, objectOffsetY, objectOffsetZ, firstObject,
+                                    secondObject, radiusSum, i, distances, normalX, normalY, normalZ, firstAngularX,
+                                    firstAngularY, firstAngularZ, secondAngularX, secondAngularY, secondAngularZ);
   }
 }
 
 }  // namespace
 
-void computeSpherePairDistances(const double* worldX, const double* worldY, const double* worldZ, const std::int64_t* firstObject,
-                                const std::int64_t* secondObject, const double* radiusSum, size_t numPairs, double* distances,
-                                double* normalX, double* normalY, double* normalZ) {
-  computeSpherePairDistancesImpl(worldX, worldY, worldZ, firstObject, secondObject, radiusSum, numPairs, distances, normalX, normalY,
-                                 normalZ);
+void computeSpherePairDistances(
+
+    // Per-object sphere centers in the world frame.
+    const double* worldX, const double* worldY, const double* worldZ,
+
+    // Per-pair sphere-object indices and radius sums.
+    const std::int64_t* firstObject, const std::int64_t* secondObject, const double* radiusSum, size_t numPairs,
+
+    // Per-pair signed-distance and optional first-to-second unit-normal outputs.
+    double* distances, double* normalX, double* normalY, double* normalZ) {
+  computeSpherePairDistancesImpl(worldX, worldY, worldZ, nullptr, nullptr, nullptr, firstObject, secondObject, radiusSum,
+                                 numPairs, distances, normalX, normalY, normalZ, nullptr, nullptr, nullptr, nullptr,
+                                 nullptr, nullptr);
+}
+
+void computeSpherePairEvaluation(
+
+    // Per-object sphere centers in the world frame.
+    const double* worldX, const double* worldY, const double* worldZ,
+
+    // Per-object world-frame vectors from the parent-joint origin to the sphere center.
+    const double* objectOffsetX, const double* objectOffsetY, const double* objectOffsetZ,
+
+    // Per-pair sphere-object indices into the arrays above; radiusSum[pair] is r_first + r_second.
+    const std::int64_t* firstObject, const std::int64_t* secondObject, const double* radiusSum, size_t numPairs,
+
+    // Per-pair signed-distance and first-to-second unit-normal outputs.
+    double* distances, double* normalX, double* normalY, double* normalZ,
+
+    // Per-pair normal cross objectOffset[firstObject[pair]] angular coefficients.
+    double* firstAngularX, double* firstAngularY, double* firstAngularZ,
+
+    // Per-pair normal cross objectOffset[secondObject[pair]] angular coefficients.
+    double* secondAngularX, double* secondAngularY, double* secondAngularZ) {
+  computeSpherePairDistancesImpl(worldX, worldY, worldZ, objectOffsetX, objectOffsetY, objectOffsetZ, firstObject,
+                                 secondObject, radiusSum, numPairs, distances, normalX, normalY, normalZ, firstAngularX,
+                                 firstAngularY, firstAngularZ, secondAngularX, secondAngularY, secondAngularZ);
 }
 
 }  // namespace impl

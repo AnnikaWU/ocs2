@@ -150,6 +150,9 @@ SphereCollisionModel::SphereCollisionModel(const pinocchio::Model& model, const 
   worldCenterScratch_.x.resize(numObjects);
   worldCenterScratch_.y.resize(numObjects);
   worldCenterScratch_.z.resize(numObjects);
+  worldCenterScratch_.offsetX.resize(numObjects);
+  worldCenterScratch_.offsetY.resize(numObjects);
+  worldCenterScratch_.offsetZ.resize(numObjects);
 }
 
 const SphereCollisionModel::WorldCenterScratch& SphereCollisionModel::computeWorldCenters(
@@ -171,6 +174,12 @@ const SphereCollisionModel::WorldCenterScratch& SphereCollisionModel::computeWor
     worldCenterScratch_.x[objectIndex] = worldCenter.x();
     worldCenterScratch_.y[objectIndex] = worldCenter.y();
     worldCenterScratch_.z[objectIndex] = worldCenter.z();
+    // Materialize the same subtraction used by the scalar reference. Using
+    // rotation() * localCenter directly would be algebraically equivalent but
+    // changes rounding for cancellation-sensitive configurations.
+    worldCenterScratch_.offsetX[objectIndex] = worldCenterScratch_.x[objectIndex] - oMi.translation().x();
+    worldCenterScratch_.offsetY[objectIndex] = worldCenterScratch_.y[objectIndex] - oMi.translation().y();
+    worldCenterScratch_.offsetZ[objectIndex] = worldCenterScratch_.z[objectIndex] - oMi.translation().z();
   }
 
   return worldCenterScratch_;
@@ -201,32 +210,13 @@ void SphereCollisionModel::evaluate(const PinocchioInterface& pinocchioInterface
   }
 
   const auto& worldCenters = computeWorldCenters(pinocchioInterface);
-  computeDistances(worldCenters, evaluation.distances.data(), evaluation.normalX.data(), evaluation.normalY.data(),
-                   evaluation.normalZ.data());
-
-  for (size_t pairIndex = 0; pairIndex < getNumPairs(); ++pairIndex) {
-    const auto first = static_cast<size_t>(firstObject_[pairIndex]);
-    const auto second = static_cast<size_t>(secondObject_[pairIndex]);
-    const auto firstJoint = parentJoint_[first];
-    const auto secondJoint = parentJoint_[second];
-    const auto& firstJointPosition = pinocchioInterface.getData().oMi[firstJoint].translation();
-    const auto& secondJointPosition = pinocchioInterface.getData().oMi[secondJoint].translation();
-    const double firstOffsetX = worldCenters.x[first] - firstJointPosition.x();
-    const double firstOffsetY = worldCenters.y[first] - firstJointPosition.y();
-    const double firstOffsetZ = worldCenters.z[first] - firstJointPosition.z();
-    const double secondOffsetX = worldCenters.x[second] - secondJointPosition.x();
-    const double secondOffsetY = worldCenters.y[second] - secondJointPosition.y();
-    const double secondOffsetZ = worldCenters.z[second] - secondJointPosition.z();
-    evaluation.firstAngularX[pairIndex] = evaluation.normalY[pairIndex] * firstOffsetZ - evaluation.normalZ[pairIndex] * firstOffsetY;
-    evaluation.firstAngularY[pairIndex] = evaluation.normalZ[pairIndex] * firstOffsetX - evaluation.normalX[pairIndex] * firstOffsetZ;
-    evaluation.firstAngularZ[pairIndex] = evaluation.normalX[pairIndex] * firstOffsetY - evaluation.normalY[pairIndex] * firstOffsetX;
-    evaluation.secondAngularX[pairIndex] =
-        evaluation.normalY[pairIndex] * secondOffsetZ - evaluation.normalZ[pairIndex] * secondOffsetY;
-    evaluation.secondAngularY[pairIndex] =
-        evaluation.normalZ[pairIndex] * secondOffsetX - evaluation.normalX[pairIndex] * secondOffsetZ;
-    evaluation.secondAngularZ[pairIndex] =
-        evaluation.normalX[pairIndex] * secondOffsetY - evaluation.normalY[pairIndex] * secondOffsetX;
-  }
+  computeSpherePairEvaluation(
+      worldCenters.x.data(), worldCenters.y.data(), worldCenters.z.data(), worldCenters.offsetX.data(),
+      worldCenters.offsetY.data(), worldCenters.offsetZ.data(), firstObject_.data(), secondObject_.data(),
+      pairRadiusSum_.data(), getNumPairs(), evaluation.distances.data(), evaluation.normalX.data(),
+      evaluation.normalY.data(), evaluation.normalZ.data(), evaluation.firstAngularX.data(),
+      evaluation.firstAngularY.data(), evaluation.firstAngularZ.data(), evaluation.secondAngularX.data(),
+      evaluation.secondAngularY.data(), evaluation.secondAngularZ.data());
 }
 
 size_t SphereCollisionModel::getFirstParentJoint(size_t pairIndex) const {

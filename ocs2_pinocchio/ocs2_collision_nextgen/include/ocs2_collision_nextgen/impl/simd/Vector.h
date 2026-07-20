@@ -469,6 +469,31 @@ inline Vector<double, 4> permute(const Vector<double, 4>& lhs, const Vector<doub
 #endif
 }
 
+/**
+ * In-place four-by-four transpose implemented as two lane-permutation stages.
+ * Each bracket is one four-lane packet.
+ *
+ * Input packets:
+ *
+ *   row0 = [ a0 a1 a2 a3 ]
+ *   row1 = [ b0 b1 b2 b3 ]
+ *   row2 = [ c0 c1 c2 c3 ]
+ *   row3 = [ d0 d1 d2 d3 ]
+ *
+ * Stage 1, interleave matching even/odd lanes from two rows:
+ *
+ *   low01  = [ a0 b0 a2 b2 ]   high01 = [ a1 b1 a3 b3 ]
+ *   low23  = [ c0 d0 c2 d2 ]   high23 = [ c1 d1 c3 d3 ]
+ *
+ * Stage 2, combine the low and high 128-bit halves:
+ *
+ *   column0 = [ a0 b0 c0 d0 ]
+ *   column1 = [ a1 b1 c1 d1 ]
+ *   column2 = [ a2 b2 c2 d2 ]
+ *   column3 = [ a3 b3 c3 d3 ]
+ *
+ * Output assignment: row0 = column0, ..., row3 = column3.
+ */
 inline void transpose4x4(Vector<double, 4>& row0, Vector<double, 4>& row1, Vector<double, 4>& row2,
                          Vector<double, 4>& row3) {
   const Vector<double, 4> low01 = permute<0, 4, 2, 6>(row0, row1);

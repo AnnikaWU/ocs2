@@ -101,6 +101,9 @@ class SphereCollisionModel final {
     AlignedVector<double> x;
     AlignedVector<double> y;
     AlignedVector<double> z;
+    AlignedVector<double> offsetX;
+    AlignedVector<double> offsetY;
+    AlignedVector<double> offsetZ;
   };
 
   const WorldCenterScratch& computeWorldCenters(const PinocchioInterface& pinocchioInterface) const;

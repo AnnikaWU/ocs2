@@ -36,9 +36,41 @@ namespace ocs2 {
 namespace collision_nextgen {
 namespace impl {
 
-void computeSpherePairDistances(const double* worldX, const double* worldY, const double* worldZ, const std::int64_t* firstObject,
-                                const std::int64_t* secondObject, const double* radiusSum, size_t numPairs, double* distances,
-                                double* normalX, double* normalY, double* normalZ);
+void computeSpherePairDistances(
+
+    // Per-object sphere centers in the world frame.
+    const double* worldX, const double* worldY, const double* worldZ,
+
+    // Per-pair sphere-object indices and radius sums.
+    const std::int64_t* firstObject, const std::int64_t* secondObject, const double* radiusSum, size_t numPairs,
+
+    // Per-pair signed-distance and optional first-to-second unit-normal outputs.
+    double* distances, double* normalX, double* normalY, double* normalZ);
+
+/**
+ * Computes signed sphere distances and all coefficients needed by the
+ * sphere-pair Jacobian in one pass. The object offsets are world-frame sphere
+ * centers relative to their parent-joint origins.
+ */
+void computeSpherePairEvaluation(
+
+    // Per-object sphere centers in the world frame.
+    const double* worldX, const double* worldY, const double* worldZ,
+
+    // Per-object world-frame vectors from the parent-joint origin to the sphere center.
+    const double* objectOffsetX, const double* objectOffsetY, const double* objectOffsetZ,
+
+    // Per-pair sphere-object indices into the arrays above; radiusSum[pair] is r_first + r_second.
+    const std::int64_t* firstObject, const std::int64_t* secondObject, const double* radiusSum, size_t numPairs,
+
+    // Per-pair signed-distance and first-to-second unit-normal outputs.
+    double* distances, double* normalX, double* normalY, double* normalZ,
+
+    // Per-pair normal cross objectOffset[firstObject[pair]] angular coefficients.
+    double* firstAngularX, double* firstAngularY, double* firstAngularZ,
+
+    // Per-pair normal cross objectOffset[secondObject[pair]] angular coefficients.
+    double* secondAngularX, double* secondAngularY, double* secondAngularZ);
 
 }  // namespace impl
 }  // namespace collision_nextgen
