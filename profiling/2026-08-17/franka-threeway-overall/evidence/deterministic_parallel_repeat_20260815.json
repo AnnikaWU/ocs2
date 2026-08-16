@@ -1,0 +1,41 @@
+{
+  "schema": "ocs2_deterministic_parallel_repeat_v1",
+  "date": "2026-08-15",
+  "scope": "Mechanism/reproducibility test only; not a replacement for the 6x50-second three-way experiment.",
+  "profile": "fixedgrid_rk4_direct_nthreads3_deterministic_500us_forwardonly_v1",
+  "variant": "pinocchio_spheres",
+  "ddp": {
+    "nThreads": 3,
+    "deterministicParallel": true,
+    "deterministicScope": "Sequential Riccati recursion and fixed-order line search; independent node work may remain parallel."
+  },
+  "runtimeObserved": {
+    "osThreads": 3,
+    "cpusAllowedList": "0"
+  },
+  "onlineProtocol": {
+    "plantControllerHz": 100,
+    "plantStepsPerTarget": 200,
+    "targetCount": 6,
+    "mpcUpdateIntervalPlantSteps": 50,
+    "scheduledMpcUpdates": 24,
+    "rolloutIntegrator": "RK4 fixed 0.5 ms, 20 substeps per 10 ms output interval"
+  },
+  "repeatA": {
+    "outcome": "COMPLETE",
+    "plantIntervals": 1200,
+    "traceRows": 1206,
+    "successfulMpcUpdates": 24,
+    "failedMpcAttempts": 0,
+    "traceSha256": "48a40efa9ac2377a162df540564b72e17b41d380fcbae4edc2daf030a2506855"
+  },
+  "repeatB": {
+    "outcome": "COMPLETE",
+    "plantIntervals": 1200,
+    "traceRows": 1206,
+    "successfulMpcUpdates": 24,
+    "failedMpcAttempts": 0,
+    "traceSha256": "48a40efa9ac2377a162df540564b72e17b41d380fcbae4edc2daf030a2506855"
+  },
+  "byteIdentical": true
+}

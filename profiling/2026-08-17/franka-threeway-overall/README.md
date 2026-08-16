@@ -18,7 +18,10 @@
 ## 目录结构
 
 - `videos/<运行方式>/threeway_synchronized.mp4`：六个目标的三栏同步主视频。
+- `videos/<运行方式>/threeway_synchronized_poster.png`：主视频加载前显示的封面图。
 - `videos/<运行方式>/targets/target_*_threeway.mp4`：按目标拆分的三栏同步视频。
 - `videos/<运行方式>/targets/<配置>/target_*.mp4`：按目标和碰撞配置拆分的单栏视频。
+- `videos/<运行方式>/summary.zh-CN.md`：该运行方式的离线结果摘要。
+- `evidence/`：确定性模式的重复运行记录和实现补丁。
 
 这些视频均由实验结束后保存的在线轨迹离线生成；视频生成过程没有重新运行 MPC。

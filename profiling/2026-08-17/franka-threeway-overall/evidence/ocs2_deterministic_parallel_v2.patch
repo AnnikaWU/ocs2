@@ -1,0 +1,59 @@
+diff --git a/ocs2_ddp/include/ocs2_ddp/DDP_Settings.h b/ocs2_ddp/include/ocs2_ddp/DDP_Settings.h
+--- a/ocs2_ddp/include/ocs2_ddp/DDP_Settings.h
++++ b/ocs2_ddp/include/ocs2_ddp/DDP_Settings.h
+@@ -70,1 +70,6 @@ struct Settings {
+-  int threadPriority_ = 99;
++  int threadPriority_ = 99;
++  /**
++   * Avoid order-dependent recursive and candidate-selection phases while
++   * retaining parallel execution for independent per-node calculations.
++   */
++  bool deterministicParallel_ = false;
+diff --git a/ocs2_ddp/src/DDP_Settings.cpp b/ocs2_ddp/src/DDP_Settings.cpp
+--- a/ocs2_ddp/src/DDP_Settings.cpp
++++ b/ocs2_ddp/src/DDP_Settings.cpp
+@@ -71,1 +71,2 @@ Settings loadSettings(const std::string& filename, const std::string& fieldName,
+-  loadData::loadPtreeValue(pt, settings.threadPriority_, fieldName + ".threadPriority", verbose);
++  loadData::loadPtreeValue(pt, settings.threadPriority_, fieldName + ".threadPriority", verbose);
++  loadData::loadPtreeValue(pt, settings.deterministicParallel_, fieldName + ".deterministicParallel", verbose);
+diff --git a/ocs2_ddp/include/ocs2_ddp/search_strategy/LineSearchStrategy.h b/ocs2_ddp/include/ocs2_ddp/search_strategy/LineSearchStrategy.h
+--- a/ocs2_ddp/include/ocs2_ddp/search_strategy/LineSearchStrategy.h
++++ b/ocs2_ddp/include/ocs2_ddp/search_strategy/LineSearchStrategy.h
+@@ -67,1 +67,2 @@ class LineSearchStrategy final : public SearchStrategyBase {
+-                     std::function<scalar_t(const PerformanceIndex&)> meritFunc);
++                     std::function<scalar_t(const PerformanceIndex&)> meritFunc,
++                     bool deterministicParallel);
+@@ -117,1 +118,2 @@ class LineSearchStrategy final : public SearchStrategyBase {
+-  std::function<scalar_t(PerformanceIndex)> meritFunc_;
++  std::function<scalar_t(PerformanceIndex)> meritFunc_;
++  const bool deterministicParallel_;
+diff --git a/ocs2_ddp/src/search_strategy/LineSearchStrategy.cpp b/ocs2_ddp/src/search_strategy/LineSearchStrategy.cpp
+--- a/ocs2_ddp/src/search_strategy/LineSearchStrategy.cpp
++++ b/ocs2_ddp/src/search_strategy/LineSearchStrategy.cpp
+@@ -48,1 +48,2 @@ LineSearchStrategy::LineSearchStrategy(search_strategy::Settings baseSettings, line_search::Settings settings, ThreadPool& threadPoolRef,
+-                                       std::function<scalar_t(const PerformanceIndex&)> meritFunc)
++                                       std::function<scalar_t(const PerformanceIndex&)> meritFunc,
++                                       bool deterministicParallel)
+@@ -56,1 +57,2 @@ LineSearchStrategy::LineSearchStrategy(search_strategy::Settings baseSettings, line_search::Settings settings, ThreadPool& threadPoolRef,
+-      meritFunc_(std::move(meritFunc)) {
++      meritFunc_(std::move(meritFunc)),
++      deterministicParallel_(deterministicParallel) {
+@@ -169,2 +171,6 @@ bool LineSearchStrategy::run(const std::pair<scalar_t, scalar_t>& timePeriod, const vector_t& initState, const scalar_t expectedCost,
+-  auto task = [&](int) { lineSearchTask(nextTaskId_++); };
+-  threadPoolRef_.runParallel(task, threadPoolRef_.numThreads());
++  if (deterministicParallel_) {
++    lineSearchTask(0);
++  } else {
++    auto task = [&](int) { lineSearchTask(nextTaskId_++); };
++    threadPoolRef_.runParallel(task, threadPoolRef_.numThreads());
++  }
+diff --git a/ocs2_ddp/src/GaussNewtonDDP.cpp b/ocs2_ddp/src/GaussNewtonDDP.cpp
+--- a/ocs2_ddp/src/GaussNewtonDDP.cpp
++++ b/ocs2_ddp/src/GaussNewtonDDP.cpp
+@@ -107,1 +107,2 @@ GaussNewtonDDP::GaussNewtonDDP(ddp::Settings ddpSettings, const RolloutBase& ro
+-                                                      std::move(rolloutRefStock), std::move(problemRefStock), meritFunc));
++                                                      std::move(rolloutRefStock), std::move(problemRefStock), meritFunc,
++                                                      ddpSettings_.deterministicParallel_));
+@@ -529,1 +529,1 @@ scalar_t GaussNewtonDDP::solveSequentialRiccatiEquationsImpl(const ScalarFunctio
+-  if (totalNumIterations_ == 0) {
++  if (totalNumIterations_ == 0 || ddpSettings_.deterministicParallel_) {
