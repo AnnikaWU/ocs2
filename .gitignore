@@ -29,3 +29,4 @@ runs/
 **/.cache/
 **/build/
 .clangd
+log/

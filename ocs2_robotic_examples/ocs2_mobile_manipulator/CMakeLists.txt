@@ -11,6 +11,7 @@ find_package(ocs2_mpc REQUIRED)
 find_package(ocs2_robotic_tools REQUIRED)
 find_package(ocs2_robotic_assets REQUIRED)
 find_package(ocs2_pinocchio_interface REQUIRED)
+find_package(ocs2_collision_nextgen REQUIRED)
 find_package(ocs2_self_collision REQUIRED)
 find_package(pinocchio REQUIRED)
 find_package(hpp-fcl REQUIRED)
@@ -60,9 +61,22 @@ ament_target_dependencies(${PROJECT_NAME}
     ocs2_robotic_tools
     ocs2_robotic_assets
     ocs2_pinocchio_interface
+    ocs2_collision_nextgen
     ocs2_self_collision
 )
 target_compile_options(${PROJECT_NAME} PUBLIC ${OCS2_PINOCCHIO_FLAGS})
+
+add_executable(ocs2_compare_collision_urdfs
+  src/CompareCollisionUrdfs.cpp
+)
+target_link_libraries(ocs2_compare_collision_urdfs
+  PRIVATE
+    ${PROJECT_NAME}
+)
+target_include_directories(ocs2_compare_collision_urdfs
+  PRIVATE
+    ${PROJECT_BINARY_DIR}/include
+)
 
 #############
 ## Install ##
@@ -74,6 +88,10 @@ install(TARGETS ${PROJECT_NAME}
   LIBRARY DESTINATION lib
   RUNTIME DESTINATION bin
 )
+install(TARGETS
+    ocs2_compare_collision_urdfs
+  RUNTIME DESTINATION lib/${PROJECT_NAME}
+)
 install(DIRECTORY include/${PROJECT_NAME}/
   DESTINATION include/${PROJECT_NAME}
 )
@@ -81,6 +99,13 @@ install(DIRECTORY config
   DESTINATION share/${PROJECT_NAME}
 )
 install(DIRECTORY auto_generated
+  DESTINATION share/${PROJECT_NAME}
+)
+install(DIRECTORY scripts
+  DESTINATION share/${PROJECT_NAME}
+  USE_SOURCE_PERMISSIONS
+)
+install(DIRECTORY docs
   DESTINATION share/${PROJECT_NAME}
 )
 
@@ -103,6 +128,7 @@ ament_export_dependencies(
   ocs2_robotic_tools
   ocs2_robotic_assets
   ocs2_pinocchio_interface
+  ocs2_collision_nextgen
   ocs2_self_collision
   pinocchio
   Eigen3
@@ -130,6 +156,7 @@ if(BUILD_TESTING)
   endmacro()
 
   add_ocs2_test(SelfCollisionTest test/testSelfCollision.cpp)
+  add_ocs2_test(NextgenSelfCollisionTest test/testNextgenSelfCollision.cpp)
   add_ocs2_test(EndEffectorConstraintTest test/testEndEffectorConstraint.cpp)
   add_ocs2_test(DummyMobileManipulatorTest test/testDummyMobileManipulator.cpp)
   set_tests_properties(DummyMobileManipulatorTest PROPERTIES TIMEOUT 600)

@@ -41,6 +41,14 @@ MPC_BASE::MPC_BASE(mpc::Settings mpcSettings) : mpcSettings_(std::move(mpcSettin
 /******************************************************************************************************/
 /******************************************************************************************************/
 /******************************************************************************************************/
+void MPC_BASE::setRunCallbacks(RunStartCallback startCallback, RunFinishCallback finishCallback) {
+  runStartCallback_ = std::move(startCallback);
+  runFinishCallback_ = std::move(finishCallback);
+}
+
+/******************************************************************************************************/
+/******************************************************************************************************/
+/******************************************************************************************************/
 void MPC_BASE::reset() {
   initRun_ = true;
   mpcTimer_.reset();
@@ -72,7 +80,20 @@ bool MPC_BASE::run(scalar_t currentTime, const vector_t& currentState) {
   }
 
   // calculate the MPC policy
-  calculateController(currentTime, currentState, finalTime);
+  if (runStartCallback_) {
+    runStartCallback_(currentTime, currentState);
+  }
+  try {
+    calculateController(currentTime, currentState, finalTime);
+  } catch (...) {
+    if (runFinishCallback_) {
+      runFinishCallback_(false);
+    }
+    throw;
+  }
+  if (runFinishCallback_) {
+    runFinishCallback_(true);
+  }
 
   // set initRun flag to false
   initRun_ = false;

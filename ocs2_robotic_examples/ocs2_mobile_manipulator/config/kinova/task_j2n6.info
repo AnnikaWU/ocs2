@@ -210,6 +210,9 @@ selfCollision
   ; activate self-collision constraint
   activate  false
 
+  ; Self-collision backend: pinocchio_fcl or nextgen.
+  backend "pinocchio_fcl"
+
   ; TODO: Replace the collision meshes of the arm with primitive shapes.
 }
 

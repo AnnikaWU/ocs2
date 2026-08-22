@@ -63,4 +63,19 @@ class PinocchioStateInputMapping {
   PinocchioStateInputMapping(const PinocchioStateInputMapping<SCALAR>& rhs) = default;
 };
 
+/**
+ * Optional capability for mappings that can compute dfdx without also
+ * materializing dfdu. This separate interface leaves the established
+ * PinocchioStateInputMapping vtable unchanged.
+ */
+template <typename SCALAR>
+class PinocchioStateOnlyJacobianMapping {
+ public:
+  using vector_t = Eigen::Matrix<SCALAR, Eigen::Dynamic, 1>;
+  using matrix_t = Eigen::Matrix<SCALAR, Eigen::Dynamic, Eigen::Dynamic>;
+
+  virtual ~PinocchioStateOnlyJacobianMapping() = default;
+  virtual matrix_t getOcs2StateJacobian(const vector_t& state, const matrix_t& Jq, const matrix_t& Jv) const = 0;
+};
+
 }  // namespace ocs2

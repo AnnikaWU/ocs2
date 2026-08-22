@@ -77,6 +77,10 @@ int main(int argc, char** argv) {
       interface.mpcSettings(), interface.ddpSettings(), interface.getRollout(),
       interface.getOptimalControlProblem(), interface.getInitializer());
   mpc.getSolverPtr()->setReferenceManager(rosReferenceManagerPtr);
+  profiling::MpcRunProfiler mpcRunProfiler(interface.profileCostConstraintTiming());
+  mpc.setRunCallbacks(
+      [&mpcRunProfiler](scalar_t currentTime, const vector_t&) { mpcRunProfiler.start(currentTime); },
+      [&mpcRunProfiler](bool controllerIsUpdated) { mpcRunProfiler.finish(controllerIsUpdated); });
 
   // Launch MPC ROS node
   MPC_ROS_Interface mpcNode(mpc, robotName);

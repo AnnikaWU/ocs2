@@ -18,6 +18,7 @@
   <depend>ocs2_robotic_tools</depend>
   <depend>ocs2_robotic_assets</depend>
   <depend>ocs2_pinocchio_interface</depend>
+  <depend>ocs2_collision_nextgen</depend>
   <depend>ocs2_self_collision</depend>
   <depend>pinocchio</depend>
   <depend>eigen3_cmake_module</depend>

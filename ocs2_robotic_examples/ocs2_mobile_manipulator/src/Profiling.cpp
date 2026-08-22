@@ -32,6 +32,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <algorithm>
 #include <iostream>
 #include <thread>
+#include <unordered_map>
 
 namespace ocs2 {
 namespace mobile_manipulator {
@@ -53,6 +54,83 @@ std::chrono::nanoseconds percentile90(std::vector<std::chrono::nanoseconds> samp
   const size_t index = (samples.size() * 9 + 9) / 10 - 1;
   std::nth_element(samples.begin(), samples.begin() + index, samples.end());
   return samples[index];
+}
+
+std::string entryKey(const Entry& entry) {
+  std::string key;
+  key.reserve(entry.scope.size() + entry.category.size() + entry.name.size() + 2);
+  key += entry.scope;
+  key += '\0';
+  key += entry.category;
+  key += '\0';
+  key += entry.name;
+  return key;
+}
+
+void addTotalPercent(std::vector<Entry>& entries) {
+  scalar_t profiledTotalMilliseconds = 0.0;
+  for (const auto& entry : entries) {
+    profiledTotalMilliseconds += entry.totalMilliseconds;
+  }
+
+  for (auto& entry : entries) {
+    entry.totalPercent =
+        profiledTotalMilliseconds > 0.0 ? 100.0 * entry.totalMilliseconds / profiledTotalMilliseconds : 0.0;
+  }
+}
+
+std::vector<Entry> diffEntries(const std::vector<Entry>& before, const std::vector<Entry>& after) {
+  std::unordered_map<std::string, Entry> beforeByKey;
+  beforeByKey.reserve(before.size());
+  for (const auto& entry : before) {
+    beforeByKey.emplace(entryKey(entry), entry);
+  }
+
+  std::vector<Entry> diff;
+  diff.reserve(after.size());
+  for (const auto& afterEntry : after) {
+    Entry entry = afterEntry;
+    const auto beforeIt = beforeByKey.find(entryKey(afterEntry));
+    if (beforeIt != beforeByKey.end()) {
+      const auto& beforeEntry = beforeIt->second;
+      entry.calls = afterEntry.calls >= beforeEntry.calls ? afterEntry.calls - beforeEntry.calls : 0;
+      entry.totalMilliseconds = afterEntry.totalMilliseconds - beforeEntry.totalMilliseconds;
+    }
+
+    if (entry.calls == 0 || entry.totalMilliseconds <= 0.0) {
+      continue;
+    }
+
+    entry.averageMicroseconds = 1000.0 * entry.totalMilliseconds / static_cast<scalar_t>(entry.calls);
+    entry.p90Microseconds = 0.0;
+    entry.maxMicroseconds = 0.0;
+    diff.push_back(std::move(entry));
+  }
+
+  addTotalPercent(diff);
+  std::sort(diff.begin(), diff.end(), [](const Entry& lhs, const Entry& rhs) {
+    return lhs.totalMilliseconds > rhs.totalMilliseconds;
+  });
+  return diff;
+}
+
+void printMpcRunSummary(std::ostream& stream, size_t runIndex, scalar_t currentTime, bool controllerIsUpdated,
+                        const std::vector<Entry>& entries) {
+  if (entries.empty()) {
+    return;
+  }
+
+  stream << "\nMobile Manipulator MPC Run Profiling Summary #" << runIndex << " at t=" << currentTime << " [s]";
+  if (!controllerIsUpdated) {
+    stream << " (aborted)";
+  }
+  stream << ":\n";
+  stream << "\tscope\tcategory\tterm\tcalls\tprofiled total [ms]\t% profiled total\tavg [us]\n";
+  for (const auto& entry : entries) {
+    stream << '\t' << entry.scope << '\t' << entry.category << '\t' << entry.name << '\t' << entry.calls << '\t'
+           << entry.totalMilliseconds << '\t' << entry.totalPercent << '\t' << entry.averageMicroseconds << '\n';
+  }
+  stream << std::endl;
 }
 
 class ActiveRecordGuard {
@@ -152,6 +230,7 @@ std::vector<Entry> Profiler::getEntries() const {
     entry.maxMicroseconds = toMicroseconds(accumulator.max);
     entries.push_back(std::move(entry));
   }
+  addTotalPercent(entries);
   std::sort(entries.begin(), entries.end(), [](const Entry& lhs, const Entry& rhs) {
     return lhs.totalMilliseconds > rhs.totalMilliseconds;
   });
@@ -316,6 +395,37 @@ SummaryGuard::~SummaryGuard() {
 /******************************************************************************************************/
 /******************************************************************************************************/
 /******************************************************************************************************/
+MpcRunProfiler::MpcRunProfiler(bool enabled) : enabled_(enabled) {}
+
+/******************************************************************************************************/
+/******************************************************************************************************/
+/******************************************************************************************************/
+void MpcRunProfiler::start(scalar_t currentTime) {
+  if (!enabled_) {
+    return;
+  }
+
+  currentTime_ = currentTime;
+  runIndex_++;
+  beforeRunEntries_ = Profiler::instance().getEntries();
+}
+
+/******************************************************************************************************/
+/******************************************************************************************************/
+/******************************************************************************************************/
+void MpcRunProfiler::finish(bool controllerIsUpdated) {
+  if (!enabled_) {
+    return;
+  }
+
+  const auto afterRunEntries = Profiler::instance().getEntries();
+  const auto runEntries = diffEntries(beforeRunEntries_, afterRunEntries);
+  printMpcRunSummary(std::cerr, runIndex_, currentTime_, controllerIsUpdated, runEntries);
+}
+
+/******************************************************************************************************/
+/******************************************************************************************************/
+/******************************************************************************************************/
 void printSummary(std::ostream& stream) {
   const auto entries = Profiler::instance().getEntries();
   if (entries.empty()) {
@@ -323,11 +433,11 @@ void printSummary(std::ostream& stream) {
   }
 
   stream << "\nMobile Manipulator Cost/Constraint Term Profiling Summary:\n";
-  stream << "\tscope\tcategory\tterm\tcalls\ttotal [ms]\tavg [us]\tp90 [us]\tmax [us]\n";
+  stream << "\tscope\tcategory\tterm\tcalls\ttotal [ms]\t% profiled total\tavg [us]\tp90 [us]\tmax [us]\n";
   for (const auto& entry : entries) {
     stream << '\t' << entry.scope << '\t' << entry.category << '\t' << entry.name << '\t' << entry.calls << '\t'
-           << entry.totalMilliseconds << '\t' << entry.averageMicroseconds << '\t' << entry.p90Microseconds << '\t'
-           << entry.maxMicroseconds << '\n';
+           << entry.totalMilliseconds << '\t' << entry.totalPercent << '\t' << entry.averageMicroseconds << '\t'
+           << entry.p90Microseconds << '\t' << entry.maxMicroseconds << '\n';
   }
   stream << std::endl;
 }

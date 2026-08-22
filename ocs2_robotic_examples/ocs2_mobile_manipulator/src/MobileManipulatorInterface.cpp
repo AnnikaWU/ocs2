@@ -27,6 +27,8 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ******************************************************************************/
 
+#include <sstream>
+#include <stdexcept>
 #include <string>
 
 #include <pinocchio/fwd.hpp>  // forward declarations must be included first.
@@ -53,6 +55,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "ocs2_mobile_manipulator/MobileManipulatorPreComputation.h"
 #include "ocs2_mobile_manipulator/ProfilingCollections.h"
 #include "ocs2_mobile_manipulator/constraint/EndEffectorConstraint.h"
+#include "ocs2_mobile_manipulator/constraint/MobileManipulatorNextgenSelfCollisionConstraint.h"
 #include "ocs2_mobile_manipulator/constraint/MobileManipulatorSelfCollisionConstraint.h"
 #include "ocs2_mobile_manipulator/cost/QuadraticInputCost.h"
 #include "ocs2_mobile_manipulator/dynamics/DefaultManipulatorDynamics.h"
@@ -66,6 +69,120 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 namespace ocs2 {
 namespace mobile_manipulator {
+
+namespace {
+
+enum class SelfCollisionBackend { PinocchioFcl, Nextgen };
+
+SelfCollisionBackend loadSelfCollisionBackend(const boost::property_tree::ptree& pt, const std::string& prefix) {
+  std::string backend = "pinocchio_fcl";
+  loadData::loadPtreeValue(pt, backend, prefix + ".backend", true);
+
+  if (backend == "pinocchio_fcl" || backend == "self_collision" || backend == "fcl") {
+    return SelfCollisionBackend::PinocchioFcl;
+  }
+  if (backend == "nextgen" || backend == "collision_nextgen") {
+    return SelfCollisionBackend::Nextgen;
+  }
+
+  throw std::runtime_error("[MobileManipulatorInterface] Unknown self-collision backend '" + backend +
+                           "'. Supported values are 'pinocchio_fcl' and 'nextgen'.");
+}
+
+const char* toString(SelfCollisionBackend backend) {
+  switch (backend) {
+    case SelfCollisionBackend::PinocchioFcl:
+      return "pinocchio_fcl";
+    case SelfCollisionBackend::Nextgen:
+      return "nextgen";
+  }
+  return "unknown";
+}
+
+std::string resolvePathRelativeToTaskFile(const std::string& path, const std::string& taskFile) {
+  if (path.empty()) {
+    return path;
+  }
+
+  const boost::filesystem::path inputPath(path);
+  if (inputPath.is_absolute()) {
+    return inputPath.string();
+  }
+
+  const boost::filesystem::path taskFilePath(taskFile);
+  return (taskFilePath.parent_path() / inputPath).string();
+}
+
+void checkMatchingNames(const std::vector<std::string>& lhs, const std::vector<std::string>& rhs, const std::string& label) {
+  if (lhs.size() != rhs.size()) {
+    throw std::runtime_error("[MobileManipulatorInterface] Self-collision collision URDF has a different number of " + label +
+                             " entries.");
+  }
+
+  for (size_t i = 0; i < lhs.size(); ++i) {
+    if (lhs[i] != rhs[i]) {
+      throw std::runtime_error("[MobileManipulatorInterface] Self-collision collision URDF " + label + " mismatch at index " +
+                               std::to_string(i) + ": expected '" + lhs[i] + "', got '" + rhs[i] + "'.");
+    }
+  }
+}
+
+void checkCollisionModelCompatibility(const PinocchioInterface& referenceInterface, const PinocchioInterface& collisionInterface) {
+  const auto& referenceModel = referenceInterface.getModel();
+  const auto& collisionModel = collisionInterface.getModel();
+
+  // The geometry model stores parent frame indices. They must refer to the same frames when updated with the main model data.
+  if (referenceModel.nq != collisionModel.nq || referenceModel.nv != collisionModel.nv) {
+    std::ostringstream message;
+    message << "[MobileManipulatorInterface] Self-collision collision URDF is not kinematically compatible with the main URDF. "
+            << "Expected nq/nv " << referenceModel.nq << "/" << referenceModel.nv << ", got " << collisionModel.nq << "/"
+            << collisionModel.nv << ".";
+    throw std::runtime_error(message.str());
+  }
+
+  checkMatchingNames(referenceModel.names, collisionModel.names, "joint name");
+
+  std::vector<std::string> referenceFrameNames;
+  referenceFrameNames.reserve(referenceModel.frames.size());
+  for (const auto& frame : referenceModel.frames) {
+    referenceFrameNames.push_back(frame.name);
+  }
+
+  std::vector<std::string> collisionFrameNames;
+  collisionFrameNames.reserve(collisionModel.frames.size());
+  for (const auto& frame : collisionModel.frames) {
+    collisionFrameNames.push_back(frame.name);
+  }
+
+  checkMatchingNames(referenceFrameNames, collisionFrameNames, "frame name");
+}
+
+size_t countCollisionObjectsOnFrame(const PinocchioInterface& pinocchioInterface, const PinocchioGeometryInterface& geometryInterface,
+                                    const std::string& frameName) {
+  size_t count = 0;
+  const auto& model = pinocchioInterface.getModel();
+  const auto& geometryModel = geometryInterface.getGeometryModel();
+  for (const auto& object : geometryModel.geometryObjects) {
+    if (model.frames[object.parentFrame].name == frameName) {
+      ++count;
+    }
+  }
+  return count;
+}
+
+void checkCollisionLinkPairsHaveGeometry(const PinocchioInterface& pinocchioInterface, const PinocchioGeometryInterface& geometryInterface,
+                                         const std::vector<std::pair<std::string, std::string>>& collisionLinkPairs) {
+  for (const auto& linkPair : collisionLinkPairs) {
+    const size_t firstCount = countCollisionObjectsOnFrame(pinocchioInterface, geometryInterface, linkPair.first);
+    const size_t secondCount = countCollisionObjectsOnFrame(pinocchioInterface, geometryInterface, linkPair.second);
+    if (firstCount == 0 || secondCount == 0) {
+      throw std::runtime_error("[MobileManipulatorInterface] Self-collision link pair '" + linkPair.first + ", " + linkPair.second +
+                               "' references a link without collision geometry in the selected collision URDF.");
+    }
+  }
+}
+
+}  // namespace
 
 /******************************************************************************************************/
 /******************************************************************************************************/
@@ -186,8 +303,9 @@ MobileManipulatorInterface::MobileManipulatorInterface(const std::string& taskFi
   loadData::loadPtreeValue(pt, activateSelfCollision, "selfCollision.activate", true);
   if (activateSelfCollision) {
     stateSoftConstraintPtr->add(
-        "selfCollision", getSelfCollisionConstraint(*pinocchioInterfacePtr_, taskFile, urdfFile, "selfCollision", usePreComputation,
-                                                    libraryFolder, recompileLibraries));
+        "selfCollision",
+        getSelfCollisionConstraint(*pinocchioInterfacePtr_, taskFile, urdfFile, modelType, removeJointNames, "selfCollision",
+                                   usePreComputation, libraryFolder, recompileLibraries));
   }
 
   // Dynamics
@@ -307,11 +425,14 @@ std::unique_ptr<StateCost> MobileManipulatorInterface::getEndEffectorConstraint(
 /******************************************************************************************************/
 std::unique_ptr<StateCost> MobileManipulatorInterface::getSelfCollisionConstraint(const PinocchioInterface& pinocchioInterface,
                                                                                   const std::string& taskFile, const std::string& urdfFile,
+                                                                                  ManipulatorModelType modelType,
+                                                                                  const std::vector<std::string>& removeJointNames,
                                                                                   const std::string& prefix, bool usePreComputation,
                                                                                   const std::string& libraryFolder,
                                                                                   bool recompileLibraries) {
   std::vector<std::pair<size_t, size_t>> collisionObjectPairs;
   std::vector<std::pair<std::string, std::string>> collisionLinkPairs;
+  std::string collisionUrdfFile;
   scalar_t mu = 1e-2;
   scalar_t delta = 1e-3;
   scalar_t minimumDistance = 0.0;
@@ -323,17 +444,58 @@ std::unique_ptr<StateCost> MobileManipulatorInterface::getSelfCollisionConstrain
   loadData::loadPtreeValue(pt, mu, prefix + ".mu", true);
   loadData::loadPtreeValue(pt, delta, prefix + ".delta", true);
   loadData::loadPtreeValue(pt, minimumDistance, prefix + ".minimumDistance", true);
+  loadData::loadPtreeValue(pt, collisionUrdfFile, prefix + ".collisionUrdfFile", true);
+  const SelfCollisionBackend backend = loadSelfCollisionBackend(pt, prefix);
   loadData::loadStdVectorOfPair(taskFile, prefix + ".collisionObjectPairs", collisionObjectPairs, true);
   loadData::loadStdVectorOfPair(taskFile, prefix + ".collisionLinkPairs", collisionLinkPairs, true);
   std::cerr << " #### =============================================================================\n";
 
-  PinocchioGeometryInterface geometryInterface(pinocchioInterface, collisionLinkPairs, collisionObjectPairs);
+  if (backend == SelfCollisionBackend::Nextgen && !usePreComputation) {
+    throw std::invalid_argument("[MobileManipulatorInterface] " + prefix +
+                                ".backend \"nextgen\" requires model_settings.usePreComputation true.");
+  }
+
+  if (!collisionObjectPairs.empty()) {
+    std::cerr << "WARNING: SelfCollision raw collisionObjectPairs contains " << collisionObjectPairs.size()
+              << " geometry-object index pairs. These indices are interpreted in the selected collision URDF GeometryModel and "
+                 "may point to different objects if collisionUrdfFile changes.\n"
+                 "Highly recommend using collisionLinkPairs for dedicated collision URDFs.\n";
+  }
+
+  const bool useDedicatedCollisionUrdf = !collisionUrdfFile.empty();
+  if (!useDedicatedCollisionUrdf) {
+    collisionUrdfFile = urdfFile;
+  } else {
+    collisionUrdfFile = resolvePathRelativeToTaskFile(collisionUrdfFile, taskFile);
+  }
+  boost::filesystem::path collisionUrdfPath(collisionUrdfFile);
+  if (!boost::filesystem::exists(collisionUrdfPath)) {
+    throw std::invalid_argument("[MobileManipulatorInterface] Self-collision URDF file not found: " + collisionUrdfPath.string());
+  }
+
+  std::cerr << "SelfCollision: Loading collision geometry from: " << collisionUrdfPath << '\n';
+  // Build the collision URDF with the same model type and removed joints as the main URDF so frame indices remain compatible.
+  PinocchioInterface collisionPinocchioInterface = createPinocchioInterface(collisionUrdfPath.string(), modelType, removeJointNames);
+  if (useDedicatedCollisionUrdf) {
+    checkCollisionModelCompatibility(pinocchioInterface, collisionPinocchioInterface);
+  }
+
+  PinocchioGeometryInterface geometryInterface(collisionPinocchioInterface, collisionLinkPairs, collisionObjectPairs);
+  if (useDedicatedCollisionUrdf) {
+    checkCollisionLinkPairsHaveGeometry(collisionPinocchioInterface, geometryInterface, collisionLinkPairs);
+  }
 
   const size_t numCollisionPairs = geometryInterface.getNumCollisionPairs();
   std::cerr << "SelfCollision: Testing for " << numCollisionPairs << " collision pairs\n";
 
+  std::cerr << "SelfCollision: backend " << toString(backend) << '\n';
+
   std::unique_ptr<StateConstraint> constraint;
-  if (usePreComputation) {
+  if (backend == SelfCollisionBackend::Nextgen) {
+    constraint = std::make_unique<MobileManipulatorNextgenSelfCollisionConstraint>(MobileManipulatorPinocchioMapping(manipulatorModelInfo_),
+                                                                                   collisionPinocchioInterface.getModel(),
+                                                                                   geometryInterface.getGeometryModel(), minimumDistance);
+  } else if (usePreComputation) {
     constraint = std::make_unique<MobileManipulatorSelfCollisionConstraint>(MobileManipulatorPinocchioMapping(manipulatorModelInfo_),
                                                                             std::move(geometryInterface), minimumDistance);
   } else {

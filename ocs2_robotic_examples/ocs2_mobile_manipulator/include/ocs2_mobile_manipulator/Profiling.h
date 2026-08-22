@@ -50,6 +50,7 @@ struct Entry {
   std::string name;
   size_t calls = 0;
   scalar_t totalMilliseconds = 0.0;
+  scalar_t totalPercent = 0.0;
   scalar_t averageMicroseconds = 0.0;
   scalar_t p90Microseconds = 0.0;
   scalar_t maxMicroseconds = 0.0;
@@ -132,6 +133,21 @@ class SummaryGuard {
 
  private:
   bool enabled_;
+};
+
+/** Prints per-MPC-run deltas for the profiled cost/constraint term timers. */
+class MpcRunProfiler {
+ public:
+  explicit MpcRunProfiler(bool enabled);
+
+  void start(scalar_t currentTime);
+  void finish(bool controllerIsUpdated);
+
+ private:
+  bool enabled_;
+  size_t runIndex_ = 0;
+  scalar_t currentTime_ = 0.0;
+  std::vector<Entry> beforeRunEntries_;
 };
 
 void printSummary(std::ostream& stream);
