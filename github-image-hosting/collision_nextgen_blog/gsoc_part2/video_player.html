@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Collision demo video</title>
+  <style>
+    :root { color-scheme: dark; }
+    body { margin: 0; background: #111; color: #eee; font: 16px/1.5 system-ui, sans-serif; }
+    main { width: min(1280px, 100%); margin: 0 auto; padding: 20px; box-sizing: border-box; }
+    h1 { margin: 0 0 14px; font-size: 20px; font-weight: 600; }
+    video { display: block; width: 100%; height: auto; background: #000; }
+    p { margin: 12px 0 0; color: #aaa; }
+    a { color: #8ab4f8; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1 id="title">Collision demo video</h1>
+    <video id="player" controls playsinline></video>
+    <p id="status">Loading the full-resolution video…</p>
+    <p><a id="download" hidden download>Download MP4</a></p>
+  </main>
+  <script>
+    const rawBase = "https://raw.githubusercontent.com/AnnikaWU/ocs2/a011a532222687d64350ab67e86af556bb37e266/github-image-hosting/collision_nextgen_blog/gsoc_part2/videos/";
+    const videos = {
+      bottom_up_none: ["Bottom-up frontal — self-collision disabled", "bottom_up_none.mp4"],
+      bottom_up_nextgen: ["Bottom-up frontal — current nextgen", "bottom_up_nextgen.mp4"],
+      low_left_45_none: ["Low front-left 45° — self-collision disabled", "low_left_45_none.mp4"],
+      low_left_45_nextgen: ["Low front-left 45° — current nextgen", "low_left_45_nextgen.mp4"],
+      high_left_45_none: ["High front-left 45° — self-collision disabled", "high_left_45_none.mp4"],
+      high_left_45_nextgen: ["High front-left 45° — current nextgen", "high_left_45_nextgen.mp4"],
+    };
+
+    const key = new URLSearchParams(location.search).get("v");
+    const item = videos[key];
+    const title = document.getElementById("title");
+    const player = document.getElementById("player");
+    const status = document.getElementById("status");
+    const download = document.getElementById("download");
+
+    if (!item) {
+      status.textContent = "Unknown video.";
+    } else {
+      title.textContent = item[0];
+      document.title = item[0];
+      fetch(rawBase + item[1])
+        .then((response) => {
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
+          return response.arrayBuffer();
+        })
+        .then((buffer) => {
+          const objectUrl = URL.createObjectURL(new Blob([buffer], { type: "video/mp4" }));
+          player.src = objectUrl;
+          player.load();
+          download.href = objectUrl;
+          download.download = item[1];
+          download.hidden = false;
+          download.textContent = "Download MP4";
+          status.textContent = "1280×800 · 20 fps · 10 s";
+        })
+        .catch((error) => {
+          status.textContent = `Unable to load the video: ${error.message}`;
+        });
+    }
+  </script>
+</body>
+</html>

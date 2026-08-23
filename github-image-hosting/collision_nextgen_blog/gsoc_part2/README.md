@@ -7,3 +7,5 @@
 - [Low front-left 45 degrees, current nextgen](https://raw.githack.com/AnnikaWU/ocs2/image-hosting/collision-nextgen-blog/github-image-hosting/collision_nextgen_blog/gsoc_part2/videos/low_left_45_nextgen.mp4)
 - [High front-left 45 degrees, self-collision disabled](https://raw.githack.com/AnnikaWU/ocs2/image-hosting/collision-nextgen-blog/github-image-hosting/collision_nextgen_blog/gsoc_part2/videos/high_left_45_none.mp4)
 - [High front-left 45 degrees, current nextgen](https://raw.githack.com/AnnikaWU/ocs2/image-hosting/collision-nextgen-blog/github-image-hosting/collision_nextgen_blog/gsoc_part2/videos/high_left_45_nextgen.mp4)
+
+The browser player is available at `video_player.html?v=<video name>` and loads the H.264 publication copies with an explicit `video/mp4` media type.
